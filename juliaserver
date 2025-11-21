@@ -26,7 +26,11 @@ COMMANDS:
                                          --output/-o (capture and display output)
                                          --run-in-main/-m (run in Main namespace)
                                          --no-color (strip ANSI color codes)
-    print [TARGET] [--no-color]   Print output since last julia> prompt
+    print [TARGET] [LINES] [--no-color]
+                                  Print output from session.
+                                  Without LINES: shows output since last command
+                                  With LINES: shows last N lines
+                                  Automatically detects and highlights errors
     attach <TARGET>               Attach to an existing session
     list                          List all running Julia sessions
     info [TARGET]                 Show detailed information about session(s)
@@ -53,8 +57,10 @@ EXAMPLES:
     juliaserver run . script.jl --param=value    # Pass keyword-style arguments
 
     # View output
-    juliaserver print               # Print output from global session
+    juliaserver print               # Print output from last command
+    juliaserver print 50            # Print last 50 lines
     juliaserver print @dev          # Print output from @dev session
+    juliaserver print @dev 100      # Print last 100 lines from @dev
     juliaserver print . --no-color  # Print output without colors
 
     # Manage sessions
@@ -352,6 +358,7 @@ cmd_run() {
 cmd_print() {
     local target=""
     local no_color=0
+    local num_lines=""
 
     # Parse arguments
     for arg in "$@"; do
@@ -360,8 +367,11 @@ cmd_print() {
                 no_color=1
                 ;;
             *)
-                # First non-flag argument is the target
-                if [[ -z "$target" ]]; then
+                # Check if it's a number (lines to capture)
+                if [[ "$arg" =~ ^[0-9]+$ ]]; then
+                    num_lines="$arg"
+                # Otherwise it's the target
+                elif [[ -z "$target" ]]; then
                     target="$arg"
                 fi
                 ;;
@@ -387,51 +397,86 @@ cmd_print() {
 
     # Capture output with ANSI codes (including scrollback history)
     local captured_output=$(tmux capture-pane -t "$session_name" -p -e -S -)
+    local output_lines=""
 
-    # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
-    local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
-    local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
-    local prompt_array=($prompt_lines)
-    local num_prompts=${#prompt_array[@]}
+    # If num_lines is specified, just capture that many lines
+    if [[ -n "$num_lines" ]]; then
+        output_lines=$(echo "$captured_output" | tail -n "$num_lines")
+    else
+        # Default: capture output between last two julia> prompts
+        # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
+        local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
+        local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
+        local prompt_array=($prompt_lines)
+        local num_prompts=${#prompt_array[@]}
 
-    if [[ $num_prompts -eq 0 ]]; then
-        echo "No Julia prompt found in session '$session_name'"
-        return 1
+        if [[ $num_prompts -eq 0 ]]; then
+            echo "No Julia prompt found in session '$session_name'"
+            return 1
+        fi
+
+        # Need at least 2 prompts to show output between them
+        if [[ $num_prompts -lt 2 ]]; then
+            echo "Output from session '$session_name':"
+            echo "========================================"
+            echo "(no commands have been executed yet)"
+            echo "========================================"
+            return 0
+        fi
+
+        # Get second-to-last and last prompt lines
+        local start_line=${prompt_array[$((num_prompts - 2))]}
+        local end_line=${prompt_array[$((num_prompts - 1))]}
+
+        # Extract everything between these two prompts (excluding the prompts themselves)
+        output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+
+        # Strip the command line itself (first line, which is the command that was executed)
+        output_lines=$(echo "$output_lines" | tail -n +2)
     fi
-
-    # Need at least 2 prompts to show output between them
-    if [[ $num_prompts -lt 2 ]]; then
-        echo "Output from session '$session_name':"
-        echo "========================================"
-        echo "(no commands have been executed yet)"
-        echo "========================================"
-        return 0
-    fi
-
-    # Get second-to-last and last prompt lines
-    local start_line=${prompt_array[$((num_prompts - 2))]}
-    local end_line=${prompt_array[$((num_prompts - 1))]}
-
-    # Extract everything between these two prompts (excluding the prompts themselves)
-    local output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
-
-    # Strip the command line itself (first line, which is the command that was executed)
-    output_lines=$(echo "$output_lines" | tail -n +2)
 
     # Strip ANSI codes if --no-color flag is set
     if [[ $no_color -eq 1 ]]; then
         output_lines=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g')
     fi
 
-    # Display output
-    echo "Output from session '$session_name':"
-    echo "========================================"
-    if [[ -n "$output_lines" ]]; then
-        echo "$output_lines"
-    else
-        echo "(no output since last prompt)"
+    # Check for errors in the output (strip ANSI codes for checking only)
+    local has_error=0
+    local error_output=""
+    local output_for_check=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g')
+    if echo "$output_for_check" | grep -q "^ERROR:"; then
+        has_error=1
+        # Extract error and stacktrace, preserving ANSI codes unless --no-color was set
+        if [[ $no_color -eq 1 ]]; then
+            error_output=$(echo "$output_for_check" | sed -n '/^ERROR:/,$p')
+        else
+            error_output=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '/^ERROR:/,$p')
+            # Re-extract with ANSI codes by finding the line in original output
+            local first_error_line=$(echo "$output_for_check" | grep -n "^ERROR:" | head -1 | cut -d: -f1)
+            if [[ -n "$first_error_line" ]]; then
+                error_output=$(echo "$output_lines" | tail -n +$first_error_line)
+            fi
+        fi
     fi
-    echo "========================================"
+
+    # Display output
+    if [[ $has_error -eq 1 ]] && [[ -z "$num_lines" ]]; then
+        # Error detected and no numeric flag: show only error and stacktrace
+        echo "Output from session '$session_name':"
+        echo "========================================"
+        echo "$error_output"
+        echo "========================================"
+    else
+        # Normal output display (might include error if num_lines was specified)
+        echo "Output from session '$session_name':"
+        echo "========================================"
+        if [[ -n "$output_lines" ]]; then
+            echo "$output_lines"
+        else
+            echo "(no output since last prompt)"
+        fi
+        echo "========================================"
+    fi
 }
 
 cmd_list() {
