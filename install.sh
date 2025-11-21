@@ -8,9 +8,20 @@ VERSION="0.1.0"
 SCRIPT_NAME="juliaserver"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
+# Determine the directory where this install script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SOURCE_FILE="$SCRIPT_DIR/$SCRIPT_NAME"
+
 echo "juliaserver CLI installer v$VERSION"
 echo "======================================"
 echo ""
+
+# Check if juliaserver file exists
+if [[ ! -f "$SOURCE_FILE" ]]; then
+    echo "Error: Could not find '$SCRIPT_NAME' in $SCRIPT_DIR"
+    echo "Please ensure install.sh is in the same directory as the juliaserver executable."
+    exit 1
+fi
 
 # Check if tmux is installed
 if ! command -v tmux &> /dev/null; then
@@ -35,8 +46,8 @@ if [[ ! -d "$INSTALL_DIR" ]]; then
 fi
 
 # Copy the script
-echo "Installing $SCRIPT_NAME to $INSTALL_DIR"
-cp "$SCRIPT_NAME" "$INSTALL_DIR/$SCRIPT_NAME"
+echo "Installing $SCRIPT_NAME from $SCRIPT_DIR to $INSTALL_DIR"
+cp "$SOURCE_FILE" "$INSTALL_DIR/$SCRIPT_NAME"
 chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
 
 echo ""

@@ -21,8 +21,10 @@ COMMANDS:
     launch [PROJECT]              Launch a Julia REPL session in tmux
     run [PROJECT] <SCRIPT> [FLAGS] [ARGS]
                                   Run a script in an existing session.
+                                  Default: runs in isolated module (JLSClientModule)
                                   FLAGS: --attach/-a (attach after running)
                                          --output/-o (capture and display output)
+                                         --run-in-main/-m (run in Main namespace)
                                          --no-color (strip ANSI color codes)
     print [TARGET] [--no-color]   Print output since last julia> prompt
     attach <TARGET>               Attach to an existing session
@@ -40,9 +42,11 @@ EXAMPLES:
     juliaserver launch .            # Current directory project
 
     # Run scripts
-    juliaserver run script.jl                    # Run in global session (no output shown)
+    juliaserver run script.jl                    # Run in isolated mode (default)
     juliaserver run . script.jl                  # Run in current project session
     juliaserver run script.jl --output           # Run and capture/display output
+    juliaserver run script.jl --run-in-main      # Run in Main namespace
+    juliaserver run script.jl -m                 # Short form for --run-in-main
     juliaserver run script.jl -o --no-color      # Show output without colors
     juliaserver run script.jl --attach           # Run and attach to session
     juliaserver run script.jl -a arg1 arg2       # Run with attach flag and arguments
@@ -69,6 +73,7 @@ FEATURES:
     - Pass arguments to scripts via ARGS global variable
     - Optional output capture for debugging (--output flag)
     - View session output anytime with print command
+    - Isolated execution by default to prevent namespace pollution
 
 For more information, see: https://github.com/yourusername/juliaserver
 
@@ -189,6 +194,7 @@ cmd_run() {
     local should_attach=0
     local show_output=0
     local no_color=0
+    local isolated=1  # Default to isolated mode
 
     # Check if first arg is a project spec (@env, directory, or .)
     if [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
@@ -202,11 +208,11 @@ cmd_run() {
 
     if [[ -z "$script" ]]; then
         echo "Error: No script specified"
-        echo "Usage: juliaserver run [project] <script.jl> [--attach|-a] [--output|-o] [--no-color] [args...]"
+        echo "Usage: juliaserver run [project] <script.jl> [--attach|-a] [--output|-o] [--run-in-main|-m] [--no-color] [args...]"
         return 1
     fi
 
-    # Parse --attach, -a, --output, -o, and --no-color flags
+    # Parse flags
     local script_args=()
     for arg in "$@"; do
         case "$arg" in
@@ -215,6 +221,9 @@ cmd_run() {
                 ;;
             --output|-o)
                 show_output=1
+                ;;
+            --run-in-main|-m)
+                isolated=0
                 ;;
             --no-color)
                 no_color=1
@@ -245,9 +254,16 @@ cmd_run() {
     fi
 
     echo "Running $script in session '$session_name'..."
+    if [[ $isolated -eq 1 ]]; then
+        echo "Mode: isolated (in JLSClientModule)"
+    else
+        echo "Mode: running in Main namespace"
+    fi
 
     # Build the Julia command with ARGS if there are arguments
     local julia_cmd
+    local include_cmd
+
     if [[ ${#script_args[@]} -gt 0 ]]; then
         # Build Julia array of arguments, properly escaped
         local args_str=""
@@ -260,10 +276,17 @@ cmd_run() {
         # Remove trailing comma and space
         args_str="${args_str%, }"
 
-        julia_cmd="empty!(ARGS); append!(ARGS, [${args_str}]); include(\"$script\")"
+        include_cmd="empty!(ARGS); append!(ARGS, [${args_str}]); include(\"$script\")"
         echo "With arguments: ${script_args[*]}"
     else
-        julia_cmd="include(\"$script\")"
+        include_cmd="include(\"$script\")"
+    fi
+
+    # Wrap in module if isolated flag is set
+    if [[ $isolated -eq 1 ]]; then
+        julia_cmd="module JLSClientModule; ${include_cmd}; end"
+    else
+        julia_cmd="$include_cmd"
     fi
 
     # Send the include command

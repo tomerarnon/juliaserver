@@ -11,6 +11,7 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 - 🖼️ **GUI support** - Works with interactive visualizations (Makie, Plots, etc.)
 - 📦 **Multiple sessions** - Manage different projects/environments simultaneously
 - 🏷️ **Smart naming** - Automatic, deterministic session naming
+- 🐛 **Output capture** - Optional output display and debugging with `--output` flag and `print` command
 - 💻 **Pure bash** - No dependencies except tmux and Julia
 
 ## Installation
@@ -72,9 +73,19 @@ juliaserver launch .            # Current project
 juliaserver launch ~/my-project # Specific path
 
 # Run a script in a session
-juliaserver run script.jl           # In global session
+juliaserver run script.jl           # In global session (no output shown)
 juliaserver run . script.jl         # In current project session
 juliaserver run @dev analysis.jl    # In @dev session
+
+# Run with output capture
+juliaserver run script.jl --output  # Show output after execution
+juliaserver run script.jl -o        # Short form
+juliaserver run script.jl -o --no-color  # Without ANSI colors
+
+# View output from last command
+juliaserver print                   # Print output from global session
+juliaserver print @dev              # Print output from @dev session
+juliaserver print --no-color        # Print without colors
 
 # List all sessions
 juliaserver list
@@ -96,6 +107,13 @@ juliaserver --version
 cd ~/Documents/projects/myproject
 juliaserver launch .
 
+# Run a quick test with output
+juliaserver run . test.jl --output
+# Output:
+# ========================================
+# All tests passed!
+# ========================================
+
 # Run your visualization script
 # The Makie plot opens and stays open!
 juliaserver run . src/visualize.jl
@@ -103,8 +121,11 @@ juliaserver run . src/visualize.jl
 # Edit code in your editor...
 # Changes auto-reload via Revise!
 
-# Re-run by pressing Up in Julia REPL, or:
-# Detach (Ctrl+b d) and run juliaserver run again
+# Re-run the script (no output shown)
+juliaserver run . src/visualize.jl
+
+# Check if there were any errors
+juliaserver print
 
 # Check all running sessions
 juliaserver list
@@ -130,6 +151,33 @@ juliaserver run ~/project-b benchmark.jl
 # List all active sessions
 juliaserver list
 ```
+
+#### Output Capture and Debugging
+
+By default, `juliaserver run` sends scripts to the Julia session without displaying output. This keeps things fast and clean. When you need to see output for debugging:
+
+```bash
+# Option 1: Capture output when running
+juliaserver run script.jl --output          # Show output immediately
+juliaserver run script.jl -o                # Short form
+
+# Option 2: View output after running
+juliaserver run script.jl                   # Run without showing output
+juliaserver print                           # View output later
+
+# Works with any session
+juliaserver run @dev analysis.jl -o         # Show output from @dev session
+juliaserver print @dev                      # View @dev session output
+
+# Strip colors for logging or piping
+juliaserver run script.jl -o --no-color     # Show output without colors
+juliaserver print --no-color > log.txt      # Save to file without colors
+```
+
+**When to use each approach:**
+- Use `--output` flag when you want immediate feedback (debugging, checking results)
+- Use `print` command when you forgot to add `--output` or want to review output later
+- Use `--attach` flag for interactive work or long-running scripts with live output
 
 #### Tmux Integration
 
@@ -221,6 +269,23 @@ if abspath(PROGRAM_FILE) == @__FILE__
     df = load_data()
     analyze_data(df)
 end
+```
+
+### Quick Debugging Workflow
+
+```bash
+# Rapid iteration with output checking
+juliaserver run script.jl -o        # Run and see output
+# Edit script.jl in your editor
+juliaserver run script.jl -o        # Run again with changes
+
+# Or run without output, check later
+juliaserver run script.jl           # Fast, no output
+juliaserver run script.jl           # Run again
+juliaserver print                   # Check last output
+
+# Save output for later analysis
+juliaserver print --no-color > debug.log
 ```
 
 ## Troubleshooting
