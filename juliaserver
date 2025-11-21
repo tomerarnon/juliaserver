@@ -1,0 +1,854 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# ==============================================================================
+# Julia + Tmux Session Management CLI
+# ==============================================================================
+
+show_help() {
+    cat << EOF
+juliaserver - Manage Julia REPL sessions in tmux
+
+VERSION: $VERSION
+
+USAGE:
+    juliaserver <COMMAND> [OPTIONS] [ARGS]
+
+COMMANDS:
+    launch [PROJECT]              Launch a Julia REPL session in tmux
+    run [PROJECT] <SCRIPT> [FLAGS] [ARGS]
+                                  Run a script in an existing session.
+                                  FLAGS: --attach/-a (attach after running)
+                                         --output/-o (capture and display output)
+                                         --no-color (strip ANSI color codes)
+    print [TARGET] [--no-color]   Print output since last julia> prompt
+    attach <TARGET>               Attach to an existing session
+    list                          List all running Julia sessions
+    info [TARGET]                 Show detailed information about session(s)
+    kill <TARGET>                 Kill a Julia session
+    killall                       Kill all running Julia sessions
+    help                          Show this help message
+    version                       Show version information
+
+EXAMPLES:
+    # Launch sessions
+    juliaserver launch              # Global environment
+    juliaserver launch @dev         # Named environment
+    juliaserver launch .            # Current directory project
+
+    # Run scripts
+    juliaserver run script.jl                    # Run in global session (no output shown)
+    juliaserver run . script.jl                  # Run in current project session
+    juliaserver run script.jl --output           # Run and capture/display output
+    juliaserver run script.jl -o --no-color      # Show output without colors
+    juliaserver run script.jl --attach           # Run and attach to session
+    juliaserver run script.jl -a arg1 arg2       # Run with attach flag and arguments
+    juliaserver run . script.jl --param=value    # Pass keyword-style arguments
+
+    # View output
+    juliaserver print               # Print output from global session
+    juliaserver print @dev          # Print output from @dev session
+    juliaserver print . --no-color  # Print output without colors
+
+    # Manage sessions
+    juliaserver list                # List all sessions
+    juliaserver info                # Show info for all sessions
+    juliaserver info @dev           # Show info for specific session
+    juliaserver attach @dev         # Attach to a session
+    juliaserver kill julia_dev      # Kill specific session
+    juliaserver killall             # Kill all Julia sessions
+
+FEATURES:
+    - Multiple named sessions for different projects
+    - Automatic Revise.jl integration for instant reloading
+    - Works with interactive GUIs (Makie, Plots, etc.)
+    - Deterministic session naming based on projects
+    - Pass arguments to scripts via ARGS global variable
+    - Optional output capture for debugging (--output flag)
+    - View session output anytime with print command
+
+For more information, see: https://github.com/yourusername/juliaserver
+
+EOF
+}
+
+show_version() {
+    echo "juliaserver version $VERSION"
+}
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+_julia_session_name_from_project() {
+    local project="$1"
+
+    # Handle empty/global environment
+    if [[ -z "$project" ]]; then
+        echo "julia_global"
+        return
+    fi
+
+    # Handle @environment syntax
+    if [[ "$project" == @* ]]; then
+        # Strip the @ and use as session name
+        local env_name="${project:1}"
+        echo "julia_${env_name}"
+        return
+    fi
+
+    # For paths, use basename + short hash for uniqueness
+    local full_path=$(cd "$project" 2>/dev/null && pwd || echo "$project")
+    local basename=$(basename "$full_path")
+
+    # Sanitize basename (replace spaces/special chars with underscores)
+    basename=$(echo "$basename" | tr ' -' '_' | tr -cd '[:alnum:]_')
+
+    # Generate short hash for uniqueness
+    local hash=$(echo -n "$full_path" | md5 | cut -c1-4)
+
+    echo "julia_${basename}_${hash}"
+}
+
+# ==============================================================================
+# Commands
+# ==============================================================================
+
+cmd_launch() {
+    local project="${1:-}"
+    local session_name=$(_julia_session_name_from_project "$project")
+    local proj_desc="${project:-global environment}"
+
+    # Check if session already exists
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "A Julia session '$session_name' is already running for: $proj_desc"
+        echo "1) Kill and relaunch"
+        echo "2) Cancel"
+        echo -n "Choose an option (1 or 2): "
+        read choice
+
+        if [[ "$choice" == "1" ]]; then
+            echo "Killing existing session '$session_name'..."
+            tmux kill-session -t "$session_name"
+            sleep 1
+        else
+            echo "Aborting."
+            return 1
+        fi
+    fi
+
+    echo "Starting Julia session '$session_name' for: $proj_desc"
+
+    # Create new tmux session with bash, then start Julia from within it
+    tmux new-session -d -s "$session_name"
+
+    # Store the original project path for later retrieval
+    if [[ -n "$project" ]]; then
+        # Convert to absolute path if it's a relative path
+        local stored_path="$project"
+        if [[ "$project" != /* ]] && [[ "$project" != @* ]] && [[ "$project" != "." ]]; then
+            stored_path=$(cd "$project" 2>/dev/null && pwd || echo "$project")
+        elif [[ "$project" == "." ]]; then
+            stored_path=$(pwd)
+        fi
+        tmux set-option -t "$session_name" @juliaserver_project "$stored_path"
+    fi
+
+    # Wait a moment for tmux to be ready
+    sleep 1
+
+    # Start Julia with appropriate project setting
+    if [[ -z "$project" ]]; then
+        tmux send-keys -t "$session_name" 'julia -t auto' C-m
+    else
+        tmux send-keys -t "$session_name" "julia --project=\"$project\" -t auto" C-m
+    fi
+
+    # Wait for Julia to start
+    sleep 3
+
+    # Send Revise loading command
+    echo "Loading Revise..."
+    tmux send-keys -t "$session_name" 'using Revise' C-m
+
+    echo "Session '$session_name' started successfully!"
+    if [[ -n "$project" ]]; then
+        echo "Use 'juliaserver run $project <script.jl>' to run scripts"
+    else
+        echo "Use 'juliaserver run <script.jl>' to run scripts"
+    fi
+    echo "Use 'tmux attach -t $session_name' to attach to the session"
+}
+
+cmd_run() {
+    local project=""
+    local script=""
+    local should_attach=0
+    local show_output=0
+    local no_color=0
+
+    # Check if first arg is a project spec (@env, directory, or .)
+    if [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
+        project="$1"
+        shift
+    fi
+
+    # Get the script path
+    script="$1"
+    shift
+
+    if [[ -z "$script" ]]; then
+        echo "Error: No script specified"
+        echo "Usage: juliaserver run [project] <script.jl> [--attach|-a] [--output|-o] [--no-color] [args...]"
+        return 1
+    fi
+
+    # Parse --attach, -a, --output, -o, and --no-color flags
+    local script_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --attach|-a)
+                should_attach=1
+                ;;
+            --output|-o)
+                show_output=1
+                ;;
+            --no-color)
+                no_color=1
+                ;;
+            *)
+                script_args+=("$arg")
+                ;;
+        esac
+    done
+
+    # Get session name
+    local session_name=$(_julia_session_name_from_project "$project")
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' is not running"
+        if [[ -z "$project" ]]; then
+            echo "Start it first with: juliaserver launch"
+        else
+            echo "Start it first with: juliaserver launch $project"
+        fi
+        return 1
+    fi
+
+    # Convert to absolute path if relative
+    if [[ "$script" != /* ]]; then
+        script="$(pwd)/$script"
+    fi
+
+    echo "Running $script in session '$session_name'..."
+
+    # Build the Julia command with ARGS if there are arguments
+    local julia_cmd
+    if [[ ${#script_args[@]} -gt 0 ]]; then
+        # Build Julia array of arguments, properly escaped
+        local args_str=""
+        for arg in "${script_args[@]}"; do
+            # Escape backslashes and quotes in the argument
+            local escaped_arg="${arg//\\/\\\\}"
+            escaped_arg="${escaped_arg//\"/\\\"}"
+            args_str="${args_str}\"${escaped_arg}\", "
+        done
+        # Remove trailing comma and space
+        args_str="${args_str%, }"
+
+        julia_cmd="empty!(ARGS); append!(ARGS, [${args_str}]); include(\"$script\")"
+        echo "With arguments: ${script_args[*]}"
+    else
+        julia_cmd="include(\"$script\")"
+    fi
+
+    # Send the include command
+    tmux send-keys -t "$session_name" "$julia_cmd" C-m
+
+    # Attach to the session only if --attach or -a flag was provided
+    if [[ $should_attach -eq 1 ]]; then
+        echo "Attaching to session (press Ctrl+b then d to detach)..."
+        sleep 0.5
+        tmux attach -t "$session_name"
+    else
+        echo "Script sent to session '$session_name'"
+
+        # Capture and display output only if --output flag was provided
+        if [[ $show_output -eq 1 ]]; then
+            # Wait briefly for script to execute
+            sleep 1
+
+            # Capture output and display everything between the last two julia> prompts
+            # Use -e flag to include ANSI escape sequences (colors)
+            local captured_output=$(tmux capture-pane -t "$session_name" -p -e)
+
+            # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
+            local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
+            local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
+            local prompt_array=($prompt_lines)
+            local num_prompts=${#prompt_array[@]}
+
+            # Need at least 2 prompts (one before command, one after)
+            if [[ $num_prompts -ge 2 ]]; then
+                # Get second-to-last and last prompt lines
+                local start_line=${prompt_array[$((num_prompts - 2))]}
+                local end_line=${prompt_array[$((num_prompts - 1))]}
+
+                # Extract everything between these two prompts (excluding the prompts themselves)
+                local total_lines=$(echo "$captured_output" | wc -l | tr -d ' ')
+                local output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+
+                # Strip the command line itself (first line, which is the include command)
+                output_lines=$(echo "$output_lines" | tail -n +2)
+
+                # Strip ANSI codes if --no-color flag is set
+                if [[ $no_color -eq 1 ]]; then
+                    output_lines=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g')
+                fi
+
+                # Only display if there's actual output (non-empty after stripping whitespace)
+                if [[ -n "$(echo "$output_lines" | tr -d '[:space:]')" ]]; then
+                    echo ""
+                    echo "Output:"
+                    echo "========================================"
+                    echo "$output_lines"
+                    echo "========================================"
+                fi
+            fi
+        fi
+
+        echo ""
+        echo "Use 'juliaserver attach $project' to attach to the session"
+    fi
+}
+
+cmd_print() {
+    local target=""
+    local no_color=0
+
+    # Parse arguments
+    for arg in "$@"; do
+        case "$arg" in
+            --no-color)
+                no_color=1
+                ;;
+            *)
+                # First non-flag argument is the target
+                if [[ -z "$target" ]]; then
+                    target="$arg"
+                fi
+                ;;
+        esac
+    done
+
+    # Get session name
+    local session_name=""
+    if [[ "$target" == julia_* ]]; then
+        # Target is already a session name
+        session_name="$target"
+    else
+        # Convert project spec to session name
+        session_name=$(_julia_session_name_from_project "$target")
+    fi
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' not found"
+        echo "Use 'juliaserver list' to see running sessions"
+        return 1
+    fi
+
+    # Capture output with ANSI codes (including scrollback history)
+    local captured_output=$(tmux capture-pane -t "$session_name" -p -e -S -)
+
+    # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
+    local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
+    local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
+    local prompt_array=($prompt_lines)
+    local num_prompts=${#prompt_array[@]}
+
+    if [[ $num_prompts -eq 0 ]]; then
+        echo "No Julia prompt found in session '$session_name'"
+        return 1
+    fi
+
+    # Need at least 2 prompts to show output between them
+    if [[ $num_prompts -lt 2 ]]; then
+        echo "Output from session '$session_name':"
+        echo "========================================"
+        echo "(no commands have been executed yet)"
+        echo "========================================"
+        return 0
+    fi
+
+    # Get second-to-last and last prompt lines
+    local start_line=${prompt_array[$((num_prompts - 2))]}
+    local end_line=${prompt_array[$((num_prompts - 1))]}
+
+    # Extract everything between these two prompts (excluding the prompts themselves)
+    local output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+
+    # Strip the command line itself (first line, which is the command that was executed)
+    output_lines=$(echo "$output_lines" | tail -n +2)
+
+    # Strip ANSI codes if --no-color flag is set
+    if [[ $no_color -eq 1 ]]; then
+        output_lines=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g')
+    fi
+
+    # Display output
+    echo "Output from session '$session_name':"
+    echo "========================================"
+    if [[ -n "$output_lines" ]]; then
+        echo "$output_lines"
+    else
+        echo "(no output since last prompt)"
+    fi
+    echo "========================================"
+}
+
+cmd_list() {
+    echo "Running Julia tmux sessions:"
+    echo "============================="
+
+    local found=0
+
+    # Get all tmux sessions that start with "julia_"
+    while IFS= read -r session_line; do
+        if [[ -z "$session_line" ]]; then
+            continue
+        fi
+
+        # Parse session name (format: "session_name: X windows (created ...)")
+        local session_name=$(echo "$session_line" | cut -d: -f1)
+
+        if [[ "$session_name" == julia_* ]]; then
+            found=1
+
+            # Determine project info from session name or stored option
+            local project_info=""
+            if [[ "$session_name" == "julia_global" ]]; then
+                project_info="global environment"
+            else
+                # Try to get stored project path
+                local stored_project=$(tmux show-option -t "$session_name" -v @juliaserver_project 2>/dev/null)
+                if [[ -n "$stored_project" ]]; then
+                    project_info="$stored_project"
+                else
+                    # Fallback to session name parsing
+                    local proj_name="${session_name#julia_}"
+                    if [[ "$proj_name" == *"_"* ]]; then
+                        # Likely a path-based session, but we can't recover the full path
+                        project_info="@$proj_name or path"
+                    else
+                        # Likely an @env session
+                        project_info="@$proj_name"
+                    fi
+                fi
+            fi
+
+            # Check if session is attached
+            local attached=""
+            if echo "$session_line" | grep -q "attached"; then
+                attached=" (attached)"
+            fi
+
+            echo "Session: $session_name | Project: $project_info$attached"
+        fi
+    done < <(tmux list-sessions 2>/dev/null)
+
+    if [[ $found -eq 0 ]]; then
+        echo "No Julia tmux sessions running."
+        echo "Start one with: juliaserver launch [project]"
+    fi
+}
+
+cmd_kill() {
+    if [[ -z "${1:-}" ]]; then
+        echo "Usage: juliaserver kill <session_name|project_spec>"
+        echo "Example: juliaserver kill julia_global"
+        echo "Example: juliaserver kill @dev"
+        echo "Example: juliaserver kill ."
+        return 1
+    fi
+
+    local target="$1"
+    local session_name=""
+
+    # Check if target is a session name (starts with julia_)
+    if [[ "$target" == julia_* ]]; then
+        session_name="$target"
+    else
+        # Treat as project spec and convert to session name
+        session_name=$(_julia_session_name_from_project "$target")
+    fi
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' not found"
+        echo "Use 'juliaserver list' to see running sessions"
+        return 1
+    fi
+
+    echo "Killing Julia session '$session_name'..."
+    tmux kill-session -t "$session_name"
+    echo "Session killed."
+}
+
+cmd_attach() {
+    if [[ -z "${1:-}" ]]; then
+        echo "Usage: juliaserver attach <session_name|project_spec>"
+        echo "Example: juliaserver attach julia_global"
+        echo "Example: juliaserver attach @dev"
+        echo "Example: juliaserver attach ."
+        return 1
+    fi
+
+    local target="$1"
+    local session_name=""
+
+    # Check if target is a session name (starts with julia_)
+    if [[ "$target" == julia_* ]]; then
+        session_name="$target"
+    else
+        # Treat as project spec and convert to session name
+        session_name=$(_julia_session_name_from_project "$target")
+    fi
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' not found"
+        echo "Use 'juliaserver list' to see running sessions"
+        return 1
+    fi
+
+    echo "Attaching to session '$session_name'..."
+    tmux attach -t "$session_name"
+}
+
+cmd_killall() {
+    local killed=0
+
+    # Get all tmux sessions that start with "julia_"
+    while IFS= read -r session_line; do
+        if [[ -z "$session_line" ]]; then
+            continue
+        fi
+
+        # Parse session name (format: "session_name: X windows (created ...)")
+        local session_name=$(echo "$session_line" | cut -d: -f1)
+
+        if [[ "$session_name" == julia_* ]]; then
+            echo "Killing session '$session_name'..."
+            tmux kill-session -t "$session_name" 2>/dev/null
+            ((killed++)) || true
+        fi
+    done < <(tmux list-sessions 2>/dev/null)
+
+    if [[ $killed -eq 0 ]]; then
+        echo "No Julia sessions found to kill."
+    else
+        echo "Killed $killed Julia session(s)."
+    fi
+}
+
+_format_bytes() {
+    local bytes=$1
+    if [[ $bytes -ge 1073741824 ]]; then
+        awk "BEGIN {printf \"%.2f GB\", $bytes / 1073741824}"
+    elif [[ $bytes -ge 1048576 ]]; then
+        awk "BEGIN {printf \"%.2f MB\", $bytes / 1048576}"
+    elif [[ $bytes -ge 1024 ]]; then
+        awk "BEGIN {printf \"%.2f KB\", $bytes / 1024}"
+    else
+        printf "%d B" $bytes
+    fi
+}
+
+_format_uptime() {
+    local seconds=$1
+    local days=$((seconds / 86400))
+    local hours=$(((seconds % 86400) / 3600))
+    local minutes=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+    
+    if [[ $days -gt 0 ]]; then
+        printf "%dd %dh %dm %ds" $days $hours $minutes $secs
+    elif [[ $hours -gt 0 ]]; then
+        printf "%dh %dm %ds" $hours $minutes $secs
+    elif [[ $minutes -gt 0 ]]; then
+        printf "%dm %ds" $minutes $secs
+    else
+        printf "%ds" $secs
+    fi
+}
+
+_get_julia_processes_for_session() {
+    local session_name="$1"
+    local julia_pids=()
+    
+    # Get all pane PIDs for this session
+    local pane_pids=$(tmux list-panes -t "$session_name" -F "#{pane_pid}" 2>/dev/null)
+    
+    if [[ -z "$pane_pids" ]]; then
+        echo ""
+        return
+    fi
+    
+    # Find Julia processes that are descendants of these pane PIDs
+    # We'll search for all Julia processes and check if they're related to our panes
+    while IFS= read -r julia_proc; do
+        if [[ -z "$julia_proc" ]]; then
+            continue
+        fi
+        
+        # Extract PID from ps output (format varies, try common formats)
+        local pid=$(echo "$julia_proc" | awk '{print $2}')
+        
+        # Check if this process or any ancestor is one of our pane PIDs
+        # by walking up the process tree
+        local current_pid=$pid
+        local found=0
+        
+        # Check up to 10 levels up the process tree
+        for i in {1..10}; do
+            # Check if current PID matches any pane PID
+            for pane_pid in $pane_pids; do
+                if [[ "$current_pid" == "$pane_pid" ]]; then
+                    found=1
+                    break
+                fi
+            done
+            
+            if [[ $found -eq 1 ]]; then
+                break
+            fi
+            
+            # Get parent PID
+            local parent_pid=$(ps -o ppid= -p "$current_pid" 2>/dev/null | tr -d ' ')
+            if [[ -z "$parent_pid" ]] || [[ "$parent_pid" == "1" ]] || [[ "$parent_pid" == "$current_pid" ]]; then
+                break
+            fi
+            current_pid=$parent_pid
+        done
+        
+        if [[ $found -eq 1 ]]; then
+            julia_pids+=("$pid")
+        fi
+    done < <(ps aux | grep -i '[j]ulia' | grep -v 'grep')
+    
+    # Return space-separated list of PIDs
+    if [[ ${#julia_pids[@]} -gt 0 ]]; then
+        printf "%s" "${julia_pids[*]}"
+    fi
+}
+
+_get_session_memory() {
+    local session_name="$1"
+    local pids_str=$(_get_julia_processes_for_session "$session_name")
+    
+    if [[ -z "$pids_str" ]]; then
+        echo "0"
+        return
+    fi
+    
+    # Convert space-separated to array
+    local pids=($pids_str)
+    local total_memory_kb=0
+    
+    for pid in "${pids[@]}"; do
+        # Get RSS (Resident Set Size) in KB
+        local rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+        if [[ -n "$rss" ]]; then
+            total_memory_kb=$((total_memory_kb + rss))
+        fi
+    done
+    
+    # Convert KB to bytes for formatting
+    echo $((total_memory_kb * 1024))
+}
+
+cmd_info() {
+    local target="${1:-}"
+    local sessions_to_show=()
+    
+    if [[ -z "$target" ]]; then
+        # Show info for all Julia sessions
+        while IFS= read -r session_line; do
+            if [[ -z "$session_line" ]]; then
+                continue
+            fi
+            
+            local session_name=$(echo "$session_line" | cut -d: -f1)
+            if [[ "$session_name" == julia_* ]]; then
+                sessions_to_show+=("$session_name")
+            fi
+        done < <(tmux list-sessions 2>/dev/null)
+        
+        if [[ ${#sessions_to_show[@]} -eq 0 ]]; then
+            echo "No Julia sessions running."
+            return 0
+        fi
+    else
+        # Show info for specific session
+        local session_name=""
+        if [[ "$target" == julia_* ]]; then
+            session_name="$target"
+        else
+            session_name=$(_julia_session_name_from_project "$target")
+        fi
+        
+        if ! tmux has-session -t "$session_name" 2>/dev/null; then
+            echo "Error: Julia session '$session_name' not found"
+            echo "Use 'juliaserver list' to see running sessions"
+            return 1
+        fi
+        
+        sessions_to_show+=("$session_name")
+    fi
+    
+    echo "Julia Session Information"
+    echo "========================="
+    echo ""
+    
+    local total_sessions=${#sessions_to_show[@]}
+    local session_index=0
+    
+    for session_name in "${sessions_to_show[@]}"; do
+        ((session_index++))
+        # Get session metadata from tmux
+        local session_info=$(tmux list-sessions -F "#{session_name}:#{session_created}:#{session_windows}:#{session_attached}" 2>/dev/null | grep "^${session_name}:")
+        
+        if [[ -z "$session_info" ]]; then
+            continue
+        fi
+        
+        local created_timestamp=$(echo "$session_info" | cut -d: -f2)
+        local attached=$(echo "$session_info" | cut -d: -f4)
+        
+        # Calculate uptime
+        local current_time=$(date +%s)
+        local uptime_seconds=$((current_time - created_timestamp))
+        local uptime=$(_format_uptime $uptime_seconds)
+        
+        # Determine project info from session name or stored option
+        local project_info=""
+        if [[ "$session_name" == "julia_global" ]]; then
+            project_info="global environment"
+        else
+            # Try to get stored project path
+            local stored_project=$(tmux show-option -t "$session_name" -v @juliaserver_project 2>/dev/null)
+            if [[ -n "$stored_project" ]]; then
+                project_info="$stored_project"
+            else
+                # Fallback to session name parsing
+                local proj_name="${session_name#julia_}"
+                if [[ "$proj_name" == *"_"* ]]; then
+                    # Likely a path-based session, but we can't recover the full path
+                    project_info="@$proj_name or path"
+                else
+                    # Likely an @env session
+                    project_info="@$proj_name"
+                fi
+            fi
+        fi
+        
+        # Get memory usage
+        local memory_bytes=$(_get_session_memory "$session_name")
+        local memory=$(_format_bytes $memory_bytes)
+        
+        # Get Julia process PIDs
+        local julia_pids_str=$(_get_julia_processes_for_session "$session_name")
+        local process_count=0
+        local pids_display=""
+        
+        if [[ -n "$julia_pids_str" ]]; then
+            local pids=($julia_pids_str)
+            process_count=${#pids[@]}
+            if [[ $process_count -eq 1 ]]; then
+                pids_display="(PID: ${pids[0]})"
+            else
+                pids_display="(PIDs: ${julia_pids_str// /, })"
+            fi
+        fi
+        
+        # Status
+        local status="running"
+        if [[ "$attached" == "1" ]]; then
+            status="running (attached)"
+        else
+            status="running (detached)"
+        fi
+        
+        # Display session info
+        echo "Session: $session_name"
+        echo "  Project: $project_info"
+        echo "  Status: $status"
+        echo "  Uptime: $uptime"
+        echo "  Memory: $memory"
+        if [[ $process_count -gt 0 ]]; then
+            echo "  Processes: $process_count $pids_display"
+        else
+            echo "  Processes: 0 (no Julia processes found)"
+        fi
+        
+        # Add separator between sessions
+        if [[ $total_sessions -gt 1 ]] && [[ $session_index -lt $total_sessions ]]; then
+            echo ""
+        fi
+    done
+}
+
+# ==============================================================================
+# Main Entry Point
+# ==============================================================================
+
+main() {
+    local command="${1:-help}"
+    shift || true
+
+    case "$command" in
+        launch|start|server)
+            cmd_launch "$@"
+            ;;
+        run|exec|client)
+            cmd_run "$@"
+            ;;
+        print|output|show)
+            cmd_print "$@"
+            ;;
+        attach)
+            cmd_attach "$@"
+            ;;
+        list|ls)
+            cmd_list
+            ;;
+        info)
+            cmd_info "$@"
+            ;;
+        kill|stop)
+            cmd_kill "$@"
+            ;;
+        killall)
+            cmd_killall
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        version|--version|-v)
+            show_version
+            ;;
+        *)
+            echo "Error: Unknown command '$command'"
+            echo "Run 'juliaserver help' for usage information."
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function
+main "$@"
