@@ -12,6 +12,7 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 - 📦 **Multiple sessions** - Manage different projects/environments simultaneously
 - 🏷️ **Smart naming** - Automatic, deterministic session naming
 - 🐛 **Output capture** - Optional output display and debugging with `--output` flag and `print` command
+- 🔒 **Isolated execution** - Scripts run in isolated namespace by default to prevent pollution
 - 💻 **Pure bash** - No dependencies except tmux and Julia
 
 ## Installation
@@ -20,10 +21,10 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 
 ```bash
 # Download and install
-curl -fsSL https://raw.githubusercontent.com/yourusername/juliaserver/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tomerarnon/juliaserver/main/install.sh | bash
 
 # Or clone and install locally
-git clone https://github.com/yourusername/juliaserver
+git clone https://github.com/tomerarnon/juliaserver
 cd juliaserver
 ./install.sh
 
@@ -73,9 +74,10 @@ juliaserver launch .            # Current project
 juliaserver launch ~/my-project # Specific path
 
 # Run a script in a session
-juliaserver run script.jl           # In global session (no output shown)
+juliaserver run script.jl           # In global session (no output shown, isolated)
 juliaserver run . script.jl         # In current project session
 juliaserver run @dev analysis.jl    # In @dev session
+juliaserver run script.jl -m        # Run in Main namespace instead of isolated
 
 # Run with output capture
 juliaserver run script.jl --output  # Show output after execution
@@ -85,6 +87,8 @@ juliaserver run script.jl -o --no-color  # Without ANSI colors
 # View output from last command
 juliaserver print                   # Print output from global session
 juliaserver print @dev              # Print output from @dev session
+juliaserver print 50                # Print last 50 lines
+juliaserver print @dev 100          # Print last 100 lines from @dev session
 juliaserver print --no-color        # Print without colors
 
 # List all sessions
@@ -179,6 +183,51 @@ juliaserver print --no-color > log.txt      # Save to file without colors
 - Use `print` command when you forgot to add `--output` or want to review output later
 - Use `--attach` flag for interactive work or long-running scripts with live output
 
+**Error detection:**
+The `print` command automatically detects errors in the output:
+- If an `ERROR:` is found, it displays the error and full stacktrace
+- You can still specify a line count to see more context
+- Use `--no-color` to strip ANSI codes for logging
+
+```bash
+# Automatic error detection
+juliaserver run script.jl              # Run script
+juliaserver print                      # Shows error + stacktrace if present
+
+# With line count
+juliaserver print 100                  # Shows last 100 lines (or error if present)
+juliaserver print @dev 50              # Shows last 50 lines from @dev session
+```
+
+#### Isolated Execution (Default)
+
+By default, scripts run in an isolated namespace to prevent polluting the Main namespace:
+
+```bash
+# Default: runs in isolated JLSClientModule
+juliaserver run script.jl
+
+# Equivalent to:
+# module JLSClientModule
+#     include("script.jl")
+# end
+```
+
+This prevents variable conflicts and keeps your REPL clean. If you need to define functions or variables in Main (e.g., for interactive use), use `--run-in-main`:
+
+```bash
+# Run in Main namespace
+juliaserver run script.jl --run-in-main
+juliaserver run script.jl -m           # Short form
+
+# Use case: defining functions for REPL
+juliaserver run utils.jl -m            # Now functions available in REPL
+```
+
+**When to use each mode:**
+- **Isolated (default)**: One-off scripts, analyses, plots, testing
+- **Main (`-m` flag)**: Defining utilities, loading data into REPL, interactive development
+
 #### Tmux Integration
 
 ```bash
@@ -202,7 +251,6 @@ Sessions are named deterministically based on the project:
 |-------|-------------|-------------|
 | (empty) | `julia_global` | Global Julia environment |
 | `@dev` | `julia_dev` | Named environment |
-| `@MyEnv` | `julia_MyEnv` | Named environment |
 | `.` | `julia_<dirname>_<hash>` | Current directory |
 | `/path/to/proj` | `julia_<basename>_<hash>` | Specific path |
 
@@ -213,8 +261,13 @@ The hash ensures uniqueness for projects with the same basename.
 1. **juliaserver launch** creates a tmux session with bash
 2. Starts Julia with the appropriate `--project` flag
 3. Auto-loads `Revise.jl`
-4. **juliaserver run** sends `includet()` commands to the session
-5. Automatically attaches to show output and enable interaction
+4. **juliaserver run** sends `include()` commands to the session
+   - By default, wraps execution in `module JLSClientModule` for isolation
+   - Use `-m` flag to run in Main namespace
+   - Use `-o` flag to capture and display output after execution
+5. **juliaserver print** captures output using `tmux capture-pane`
+   - Automatically detects and displays errors with stacktraces
+   - Supports line count limits for viewing specific amounts of output
 
 ### Why Tmux Instead of DaemonMode?
 
@@ -225,51 +278,16 @@ The hash ensures uniqueness for projects with the same basename.
 ### Detaching and Reattaching
 
 ```bash
-# Detach from session: Ctrl+b d
-# Reattach: tmux attach -t <session-name>
-# Or: juliaserver run <project> <script>  # Auto-attaches
+# Detach from session: 
+Ctrl+b d
 ```
-
-### Multiple Windows in One Session
-
 ```bash
-# While attached to a session:
-# Ctrl+b c    - Create new window
-# Ctrl+b n    - Next window
-# Ctrl+b p    - Previous window
-# Ctrl+b 0-9  - Switch to window number
+# Reattach: 
+juliaserver attach <session-name> # Or: 
+tmux attach -t <session-name> # Or: 
+juliaserver run <project> <script>  # Auto-attaches
 ```
 
-### Auto-starting Sessions
-
-Add to your `~/.bash_profile`:
-
-```bash
-# Auto-start sessions on login
-if ! tmux has-session -t julia_global 2>/dev/null; then
-    juliaserver launch &
-fi
-```
-
-### Using with Revise Patterns
-
-```julia
-# In your Julia scripts, structure for best Revise performance:
-
-# Load packages at top (tracked by Revise)
-using DataFrames, Plots
-
-# Define functions (auto-reload on change)
-function analyze_data(df)
-    # ...
-end
-
-# Run at bottom (re-run manually after edits)
-if abspath(PROGRAM_FILE) == @__FILE__
-    df = load_data()
-    analyze_data(df)
-end
-```
 
 ### Quick Debugging Workflow
 
@@ -290,17 +308,6 @@ juliaserver print --no-color > debug.log
 
 ## Troubleshooting
 
-### "Session already running"
-
-```bash
-# Kill and restart
-juliaserver kill <session-name>
-juliaserver launch <project>
-
-# Or let it prompt you
-juliaserver launch <project>  # Choose option 1 to restart
-```
-
 ### "julia: command not found"
 
 Make sure Julia is in your PATH:
@@ -320,12 +327,6 @@ using Pkg
 Pkg.add("Revise")
 ```
 
-### Scripts Not Reloading
-
-- Use `includet()` instead of `include()` for Revise tracking
-- The `juliaserver run` command uses `includet()` automatically
-- Restart the session if Revise gets stuck
-
 ### Tmux Not Found
 
 ```bash
@@ -337,59 +338,12 @@ sudo apt install tmux          # Ubuntu/Debian
 ## Uninstallation
 
 ```bash
-# If installed with Make
-make uninstall
-
-# Or manually
-rm ~/.local/bin/juliaserver
-
 # Remove all Julia sessions
-tmux kill-session -t julia_global
-# (repeat for other sessions, or use juliaserver kill)
+juliaserver killall
+
+# manually uninstall
+rm ~/.local/bin/juliaserver
 ```
-
-## Development
-
-### Project Structure
-
-```
-.
-├── juliaserver    # Main CLI script
-├── install.sh     # Installation script
-├── Makefile       # Build automation
-└── README.md      # This file
-```
-
-### Testing
-
-```bash
-# Run basic tests
-make test
-
-# Test manually
-./juliaserver help
-./juliaserver launch
-./juliaserver list
-./juliaserver kill julia_global
-```
-
-### Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details
-
-## Author
-
-Created for personal use. Feel free to adapt and improve!
 
 ## Acknowledgments
 
