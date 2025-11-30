@@ -91,6 +91,12 @@ juliaserver print 50                # Print last 50 lines
 juliaserver print @dev 100          # Print last 100 lines from @dev session
 juliaserver print --no-color        # Print without colors
 
+# Send commands directly to a session
+juliaserver send 'println("hello")'         # Execute Julia code in global session
+juliaserver send @dev 'x = 42'              # Execute in @dev session
+juliaserver send interrupt                  # Send Ctrl+C to global session
+juliaserver send @dev interrupt             # Interrupt @dev session
+
 # List all sessions
 juliaserver list
 
@@ -130,6 +136,9 @@ juliaserver run . src/visualize.jl
 
 # Check if there were any errors
 juliaserver print
+
+# Quick REPL command to check a variable
+juliaserver send . 'println("Current time: ", now())'
 
 # Check all running sessions
 juliaserver list
@@ -183,13 +192,20 @@ juliaserver print --no-color > log.txt      # Save to file without colors
 - Use `print` command when you forgot to add `--output` or want to review output later
 - Use `--attach` flag for interactive work or long-running scripts with live output
 
-**Error detection:**
-The `print` command automatically detects errors in the output:
+**Smart output display:**
+The `print` command intelligently shows relevant output:
+- If the last command produced output, it displays that output
+- If the last command had no output (like `nothing`, `sleep()`, etc.), it automatically shows output from the previous command
 - If an `ERROR:` is found, it displays the error and full stacktrace
-- You can still specify a line count to see more context
+- You can specify a line count to see more context
 - Use `--no-color` to strip ANSI codes for logging
 
 ```bash
+# Automatic fallback to previous output
+juliaserver send 'println("Important result")'  # Produces output
+juliaserver send 'sleep(0.1)'                   # No output
+juliaserver print                               # Shows "Important result" from previous command
+
 # Automatic error detection
 juliaserver run script.jl              # Run script
 juliaserver print                      # Shows error + stacktrace if present
@@ -228,6 +244,43 @@ juliaserver run utils.jl -m            # Now functions available in REPL
 - **Isolated (default)**: One-off scripts, analyses, plots, testing
 - **Main (`-m` flag)**: Defining utilities, loading data into REPL, interactive development
 
+#### Sending Commands Directly
+
+The `send` command lets you execute arbitrary Julia code or send control signals (like Ctrl+C) to a running session without attaching to it:
+
+```bash
+# Execute Julia code directly
+juliaserver send 'println("Hello, Julia!")'
+juliaserver send @dev 'using Plots'
+juliaserver send . 'x = [1, 2, 3]; sum(x)'
+
+# Send interrupt signal (Ctrl+C)
+juliaserver send interrupt                  # Interrupt global session
+juliaserver send @dev interrupt             # Interrupt @dev session
+```
+
+**Use cases:**
+
+1. **Quick REPL commands** - Load packages, define variables, run quick calculations without creating a script
+2. **Interrupt frozen sessions** - If a GUI or long computation blocks the REPL, send an interrupt to regain control
+3. **Interactive debugging** - Send test commands to check state without attaching to the session
+
+**Example: Interrupt a frozen GUI**
+
+```bash
+# Launch session and run visualization
+juliaserver launch @dev
+juliaserver run @dev plot_script.jl    # Opens a GUI window, blocks REPL
+
+# Later: GUI is still open but you need the REPL back
+juliaserver send @dev interrupt        # Sends Ctrl+C to unblock the REPL
+
+# Now you can continue working
+juliaserver send @dev 'println("REPL is back!")'
+```
+
+**Note:** Unlike `run`, the `send` command executes code directly in the Main namespace, not in an isolated module.
+
 #### Tmux Integration
 
 ```bash
@@ -265,8 +318,12 @@ The hash ensures uniqueness for projects with the same basename.
    - By default, wraps execution in `module JLSClientModule` for isolation
    - Use `-m` flag to run in Main namespace
    - Use `-o` flag to capture and display output after execution
-5. **juliaserver print** captures output using `tmux capture-pane`
+5. **juliaserver send** sends arbitrary commands or control signals
+   - Executes Julia code directly in Main namespace
+   - Can send Ctrl+C interrupt to unblock frozen sessions
+6. **juliaserver print** captures output using `tmux capture-pane`
    - Automatically detects and displays errors with stacktraces
+   - Falls back to previous cell output if last command had no output
    - Supports line count limits for viewing specific amounts of output
 
 ### Why Tmux Instead of DaemonMode?
