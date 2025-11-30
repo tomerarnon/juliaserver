@@ -31,6 +31,9 @@ COMMANDS:
                                   Without LINES: shows output since last command
                                   With LINES: shows last N lines
                                   Automatically detects and highlights errors
+    send [PROJECT] <COMMAND>      Send arbitrary command or interrupt to session.
+                                  COMMAND: 'interrupt' sends Ctrl+C
+                                           Any other string is executed as Julia code
     attach <TARGET>               Attach to an existing session
     list                          List all running Julia sessions
     info [TARGET]                 Show detailed information about session(s)
@@ -62,6 +65,13 @@ EXAMPLES:
     juliaserver print @dev          # Print output from @dev session
     juliaserver print @dev 100      # Print last 100 lines from @dev
     juliaserver print . --no-color  # Print output without colors
+
+    # Send commands
+    juliaserver send interrupt                  # Interrupt (Ctrl+C) global session
+    juliaserver send @dev interrupt             # Interrupt @dev session
+    juliaserver send 'println("hello")'         # Execute Julia code in global
+    juliaserver send @dev 'x = 42'              # Execute Julia code in @dev
+    juliaserver send . 'using Plots'            # Load package in current project
 
     # Manage sessions
     juliaserver list                # List all sessions
@@ -598,6 +608,71 @@ cmd_attach() {
     tmux attach -t "$session_name"
 }
 
+cmd_send() {
+    local project=""
+    local command=""
+
+    # Check if any arguments provided
+    if [[ $# -eq 0 ]]; then
+        echo "Error: No command specified"
+        echo "Usage: juliaserver send [project] <command|interrupt>"
+        echo ""
+        echo "Examples:"
+        echo "  juliaserver send interrupt                 # Send Ctrl+C to global session"
+        echo "  juliaserver send @dev interrupt            # Send Ctrl+C to @dev session"
+        echo "  juliaserver send 'println(\"hello\")'      # Execute Julia code in global"
+        echo "  juliaserver send @dev 'x = 42'             # Execute Julia code in @dev"
+        return 1
+    fi
+
+    # Check if first arg is a project spec (@env, directory, or .)
+    if [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
+        project="$1"
+        shift
+    fi
+
+    # Get the command (everything remaining)
+    command="$*"
+
+    if [[ -z "$command" ]]; then
+        echo "Error: No command specified"
+        echo "Usage: juliaserver send [project] <command|interrupt>"
+        echo ""
+        echo "Examples:"
+        echo "  juliaserver send interrupt                 # Send Ctrl+C to global session"
+        echo "  juliaserver send @dev interrupt            # Send Ctrl+C to @dev session"
+        echo "  juliaserver send 'println(\"hello\")'      # Execute Julia code in global"
+        echo "  juliaserver send @dev 'x = 42'             # Execute Julia code in @dev"
+        return 1
+    fi
+
+    # Get session name
+    local session_name=$(_julia_session_name_from_project "$project")
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' is not running"
+        if [[ -z "$project" ]]; then
+            echo "Start it first with: juliaserver launch"
+        else
+            echo "Start it first with: juliaserver launch $project"
+        fi
+        return 1
+    fi
+
+    # Handle special case: interrupt
+    if [[ "$command" == "interrupt" ]]; then
+        echo "Sending interrupt (Ctrl+C) to session '$session_name'..."
+        tmux send-keys -t "$session_name" C-c
+        echo "Interrupt sent."
+    else
+        # Send arbitrary command
+        echo "Sending command to session '$session_name': $command"
+        tmux send-keys -t "$session_name" "$command" C-m
+        echo "Command sent."
+    fi
+}
+
 cmd_killall() {
     local killed=0
 
@@ -888,6 +963,9 @@ main() {
             ;;
         print|output|show)
             cmd_print "$@"
+            ;;
+        send)
+            cmd_send "$@"
             ;;
         attach)
             cmd_attach "$@"
