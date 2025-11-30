@@ -338,11 +338,9 @@ cmd_run() {
                 local end_line=${prompt_array[$((num_prompts - 1))]}
 
                 # Extract everything between these two prompts (excluding the prompts themselves)
+                # Note: The command is on the same line as the prompt when using send-keys
                 local total_lines=$(echo "$captured_output" | wc -l | tr -d ' ')
                 local output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
-
-                # Strip the command line itself (first line, which is the include command)
-                output_lines=$(echo "$output_lines" | tail -n +2)
 
                 # Strip ANSI codes if --no-color flag is set
                 if [[ $no_color -eq 1 ]]; then
@@ -439,10 +437,19 @@ cmd_print() {
         local end_line=${prompt_array[$((num_prompts - 1))]}
 
         # Extract everything between these two prompts (excluding the prompts themselves)
+        # Note: The command is on the same line as the prompt when using send-keys,
+        # so the extracted lines are pure output
         output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
 
-        # Strip the command line itself (first line, which is the command that was executed)
-        output_lines=$(echo "$output_lines" | tail -n +2)
+        # If no output from the most recent command, try the previous cell
+        if [[ -z "$(echo "$output_lines" | tr -d '[:space:]')" ]] && [[ $num_prompts -ge 3 ]]; then
+            # Get third-to-last and second-to-last prompt lines
+            start_line=${prompt_array[$((num_prompts - 3))]}
+            end_line=${prompt_array[$((num_prompts - 2))]}
+
+            # Extract everything between these two prompts
+            output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+        fi
     fi
 
     # Strip ANSI codes if --no-color flag is set
