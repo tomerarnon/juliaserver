@@ -50,6 +50,40 @@ echo "Installing $SCRIPT_NAME from $SCRIPT_DIR to $INSTALL_DIR"
 cp "$SOURCE_FILE" "$INSTALL_DIR/$SCRIPT_NAME"
 chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
 
+# Install bash completion
+echo ""
+echo "Installing bash completion..."
+COMPLETION_SOURCE="$SCRIPT_DIR/bash_completion_juliaserver"
+
+if [[ ! -f "$COMPLETION_SOURCE" ]]; then
+    echo "Warning: bash_completion_juliaserver not found, skipping completion installation"
+else
+    # Detect appropriate completion directory
+    if [[ -d "/usr/local/etc/bash_completion.d" ]]; then
+        COMPLETION_DIR="/usr/local/etc/bash_completion.d"
+        mkdir -p "$COMPLETION_DIR"
+        cp "$COMPLETION_SOURCE" "$COMPLETION_DIR/juliaserver"
+        echo "✓ Completion installed to $COMPLETION_DIR/juliaserver"
+        echo ""
+        echo "If you have bash-completion installed via Homebrew, it should work automatically."
+        echo "Otherwise, add to your ~/.bash_profile:"
+        echo '  [[ -r "/usr/local/etc/profile.d/bash_completion.sh" ]] && . "/usr/local/etc/profile.d/bash_completion.sh"'
+    elif [[ -d "$HOME/.local/share/bash-completion/completions" ]]; then
+        COMPLETION_DIR="$HOME/.local/share/bash-completion/completions"
+        mkdir -p "$COMPLETION_DIR"
+        cp "$COMPLETION_SOURCE" "$COMPLETION_DIR/juliaserver"
+        echo "✓ Completion installed to $COMPLETION_DIR/juliaserver"
+    else
+        COMPLETION_DIR="$HOME/.bash_completion.d"
+        mkdir -p "$COMPLETION_DIR"
+        cp "$COMPLETION_SOURCE" "$COMPLETION_DIR/juliaserver"
+        echo "✓ Completion installed to $COMPLETION_DIR/juliaserver"
+        echo ""
+        echo "Add this line to your ~/.bashrc or ~/.bash_profile:"
+        echo "  source ~/.bash_completion.d/juliaserver"
+    fi
+fi
+
 echo ""
 echo "Installation complete!"
 echo ""

@@ -62,6 +62,69 @@ sudo apt install tmux
 # See: https://github.com/tmux/tmux
 ```
 
+## Bash Completion
+
+Tab completion is installed automatically by `install.sh` or `make install`.
+
+### Automatic Setup (Homebrew bash-completion users)
+
+If you have bash-completion installed via Homebrew, completions work immediately:
+
+```bash
+brew install bash-completion
+
+# Add to ~/.bash_profile:
+[[ -r "/usr/local/etc/profile.d/bash_completion.sh" ]] && . "/usr/local/etc/profile.d/bash_completion.sh"
+
+# Restart your shell
+source ~/.bash_profile
+```
+
+### Manual Setup
+
+If automatic installation didn't work, source the completion manually:
+
+```bash
+# Add to ~/.bashrc or ~/.bash_profile
+source ~/.bash_completion.d/juliaserver
+
+# Restart your shell
+source ~/.bashrc  # or source ~/.bash_profile
+```
+
+### Testing Completion
+
+```bash
+# Test command completion
+juliaserver <TAB>
+# Shows: launch start server run exec client print output show send attach list ls info kill stop killall help version
+
+# Test project completion
+juliaserver launch <TAB>
+# Shows: @env names from active sessions, ".", and directories
+
+# Test script completion
+juliaserver run <TAB>
+# Shows: .jl files in current directory
+
+# Test session completion
+juliaserver attach <TAB>
+# Shows: julia_global julia_dev etc.
+
+# Test flag completion
+juliaserver run script.jl <TAB>
+# Shows: --attach -a --output -o --run-in-main -m --no-color
+```
+
+### Completion Features
+
+- **Command and alias completion** - All commands and their aliases (run/exec/client, list/ls, etc.)
+- **Active session discovery** - Dynamically queries tmux for running sessions
+- **@env name extraction** - Automatically discovers environment names from session names
+- **.jl file completion** - Smart file path completion for script arguments
+- **Context-aware flag completion** - Suggests relevant flags based on command and position
+- **Project spec completion** - Completes @env names, ".", and directory paths
+
 ## Usage
 
 ### Basic Commands
