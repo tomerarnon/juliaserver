@@ -1,0 +1,155 @@
+#compdef juliaserver
+
+# Zsh completion for juliaserver CLI
+#
+# Installation:
+#   Option 1: Copy to a directory in your $fpath
+#     cp zsh_completion_juliaserver ~/.zsh/completions/_juliaserver
+#     (then add ~/.zsh/completions to fpath in .zshrc before compinit)
+#
+#   Option 2: Source directly (add to .zshrc):
+#     source /path/to/zsh_completion_juliaserver
+
+# Helper: Get active julia_* session names from tmux
+_juliaserver_get_sessions() {
+    tmux list-sessions 2>/dev/null | grep "^julia_" | cut -d: -f1
+}
+
+# Helper: Get project specs (@env names and .)
+_juliaserver_get_project_specs() {
+    local specs=(".")
+    local sessions=($(_juliaserver_get_sessions))
+
+    for session in $sessions; do
+        [[ "$session" == "julia_global" ]] && continue
+        local name="${session#julia_}"
+        if [[ "$name" != *_* ]]; then
+            specs+=("@$name")
+        fi
+    done
+
+    echo "${specs[@]}"
+}
+
+_juliaserver() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local commands=(
+        'launch:Launch a Julia REPL session in tmux'
+        'run:Run a script in an existing session'
+        'print:Print output from session'
+        'send:Send command or interrupt to session'
+        'attach:Attach to an existing session'
+        'list:List all running Julia sessions'
+        'info:Show detailed information about session(s)'
+        'kill:Kill a Julia session'
+        'killall:Kill all running Julia sessions'
+        'help:Show help message'
+        'version:Show version information'
+    )
+
+    _arguments -C \
+        '1: :->command' \
+        '*: :->args'
+
+    case $state in
+        command)
+            _describe -t commands 'juliaserver command' commands
+            ;;
+        args)
+            case $line[1] in
+                launch|start|server)
+                    _arguments \
+                        '1:project:_juliaserver_project_specs'
+                    ;;
+                run|exec|client)
+                    _arguments \
+                        '1:project or script:_juliaserver_project_or_script' \
+                        '2:script:_juliaserver_script' \
+                        '*:flags:_juliaserver_run_flags'
+                    ;;
+                print|output|show)
+                    _arguments \
+                        '*:target or options:_juliaserver_print_args'
+                    ;;
+                send)
+                    _arguments \
+                        '1:project or command:_juliaserver_send_first' \
+                        '2:command:(interrupt)'
+                    ;;
+                attach|kill|stop)
+                    _arguments \
+                        '1:target:_juliaserver_targets'
+                    ;;
+                info)
+                    _arguments \
+                        '1:target:_juliaserver_targets'
+                    ;;
+                *)
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_juliaserver_project_specs() {
+    local specs=($(_juliaserver_get_project_specs))
+    _describe -t specs 'project' specs
+    _path_files -/
+}
+
+_juliaserver_project_or_script() {
+    local specs=($(_juliaserver_get_project_specs))
+    _describe -t specs 'project' specs
+    _path_files -g '*.jl'
+    _path_files -/
+}
+
+_juliaserver_script() {
+    _path_files -g '*.jl'
+    _path_files -/
+}
+
+_juliaserver_run_flags() {
+    local flags=(
+        '--attach:Attach to session after running'
+        '-a:Attach to session after running'
+        '--output:Capture and display output'
+        '-o:Capture and display output'
+        '--run-in-main:Run in Main namespace'
+        '-m:Run in Main namespace'
+        '--no-color:Strip ANSI color codes'
+    )
+    _describe -t flags 'flag' flags
+}
+
+_juliaserver_print_args() {
+    local sessions=($(_juliaserver_get_sessions))
+    local specs=($(_juliaserver_get_project_specs))
+    local options=('--no-color:Strip ANSI color codes')
+
+    _describe -t sessions 'session' sessions
+    _describe -t specs 'project' specs
+    _describe -t options 'option' options
+}
+
+_juliaserver_send_first() {
+    local specs=($(_juliaserver_get_project_specs))
+    local cmds=('interrupt:Send Ctrl+C')
+
+    _describe -t specs 'project' specs
+    _describe -t cmds 'command' cmds
+    _path_files -/
+}
+
+_juliaserver_targets() {
+    local sessions=($(_juliaserver_get_sessions))
+    local specs=($(_juliaserver_get_project_specs))
+
+    _describe -t sessions 'session' sessions
+    _describe -t specs 'project' specs
+    _path_files -/
+}
+
+_juliaserver "$@"
