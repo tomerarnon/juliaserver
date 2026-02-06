@@ -1,4 +1,4 @@
-#compdef juliaserver
+#compdef juliaserver jls
 
 # Zsh completion for juliaserver CLI
 #
@@ -39,6 +39,7 @@ _juliaserver() {
         'launch:Launch a Julia REPL session in tmux'
         'run:Run a script in an existing session'
         'print:Print output from session'
+        'wait:Wait for a running command to finish'
         'send:Send command or interrupt to session'
         'attach:Attach to an existing session'
         'list:List all running Julia sessions'
@@ -65,13 +66,25 @@ _juliaserver() {
                     ;;
                 run|exec|client)
                     _arguments \
+                        '-a[Attach to session after running]' \
+                        '--attach[Attach to session after running]' \
+                        '-o[Capture and display output]' \
+                        '--output[Capture and display output]' \
+                        '-m[Run in Main namespace]' \
+                        '--run-in-main[Run in Main namespace]' \
+                        '--no-color[Strip ANSI color codes]' \
                         '1:project or script:_juliaserver_project_or_script' \
                         '2:script:_juliaserver_script' \
-                        '*:flags:_juliaserver_run_flags'
+                        '*:args:_files'
                     ;;
                 print|output|show)
                     _arguments \
                         '*:target or options:_juliaserver_print_args'
+                    ;;
+                wait)
+                    _arguments \
+                        '--timeout[Timeout in seconds]:seconds:' \
+                        '1:project:_juliaserver_targets'
                     ;;
                 send)
                     _arguments \

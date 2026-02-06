@@ -1,4 +1,4 @@
-.PHONY: install install-bin install-completion uninstall uninstall-bin uninstall-completion test help
+.PHONY: install install-bin install-completion uninstall uninstall-bin uninstall-completion test test-wait help
 
 PREFIX ?= $(HOME)/.local
 BINDIR = $(PREFIX)/bin
@@ -41,7 +41,9 @@ install-completion:
 		else \
 			mkdir -p $(HOME)/.zsh/completions && \
 			cp zsh_completion_juliaserver $(HOME)/.zsh/completions/_juliaserver && \
+			ln -sf _juliaserver $(HOME)/.zsh/completions/_jls && \
 			echo "✓ Zsh completion installed to ~/.zsh/completions/_juliaserver"; \
+			echo "✓ Symlink created: ~/.zsh/completions/_jls -> _juliaserver"; \
 			echo ""; \
 			echo "Add these lines to your ~/.zshrc (before compinit):"; \
 			echo '  fpath=(~/.zsh/completions $$fpath)'; \
@@ -83,6 +85,7 @@ uninstall-completion:
 	@rm -f $(HOME)/.local/share/bash-completion/completions/juliaserver
 	@rm -f $(HOME)/.bash_completion.d/juliaserver
 	@rm -f $(HOME)/.zsh/completions/_juliaserver
+	@rm -f $(HOME)/.zsh/completions/_jls
 	@echo "✓ Completion removed successfully!"
 
 test:
@@ -92,3 +95,7 @@ test:
 	@command -v tmux > /dev/null && echo "✓ tmux is installed" || echo "✗ tmux not found"
 	@command -v julia > /dev/null && echo "✓ julia is installed" || echo "✗ julia not found"
 	@echo "Basic tests passed!"
+
+test-wait:
+	@echo "Running wait integration tests..."
+	@./test_wait.sh

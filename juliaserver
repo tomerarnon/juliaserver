@@ -31,6 +31,10 @@ COMMANDS:
                                   Without LINES: shows output since last command
                                   With LINES: shows last N lines
                                   Automatically detects and highlights errors
+    wait [PROJECT] [--timeout SECS]
+                                  Wait for a running command to finish.
+                                  Polls until the julia> prompt reappears.
+                                  Returns exit code 1 on timeout.
     send [PROJECT] <COMMAND>      Send arbitrary command or interrupt to session.
                                   COMMAND: 'interrupt' sends Ctrl+C
                                            Any other string is executed as Julia code
@@ -65,6 +69,11 @@ EXAMPLES:
     juliaserver print @dev          # Print output from @dev session
     juliaserver print @dev 100      # Print last 100 lines from @dev
     juliaserver print . --no-color  # Print output without colors
+
+    # Wait for completion
+    juliaserver wait                # Wait for global session to finish
+    juliaserver wait .              # Wait for current project session
+    juliaserver wait . --timeout 30 # Wait with 30s timeout
 
     # Send commands
     juliaserver send interrupt                  # Interrupt (Ctrl+C) global session
@@ -132,6 +141,55 @@ _julia_session_name_from_project() {
     local hash=$(echo -n "$full_path" | md5 | cut -c1-4)
 
     echo "julia_${basename}_${hash}"
+}
+
+_is_session_idle() {
+    # Check if the Julia REPL is idle by examining the line at the cursor position.
+    # When idle, the cursor sits on a "julia>" prompt line.
+    # When a command is running, the cursor is below the prompt (on output or blank line).
+    # Returns 0 if idle, 1 if a command is running.
+    local session_name="$1"
+
+    local cursor_y
+    cursor_y=$(tmux display-message -t "$session_name" -p '#{cursor_y}')
+
+    # Capture just the line at the cursor position
+    local cursor_line
+    cursor_line=$(tmux capture-pane -t "$session_name" -p -S "$cursor_y" -E "$cursor_y")
+
+    # Strip ANSI codes for matching
+    cursor_line=$(echo "$cursor_line" | sed 's/\x1b\[[0-9;]*m//g')
+
+    if [[ "$cursor_line" == julia\>* ]]; then
+        return 0  # idle — cursor is on a prompt line
+    fi
+
+    return 1  # running — cursor is below the prompt
+}
+
+_wait_for_idle() {
+    # Poll until the session is idle or timeout is reached.
+    # Returns 0 on idle, 1 on timeout.
+    local session_name="$1"
+    local timeout="${2:-0}"  # 0 = no timeout
+    local poll_interval=0.5
+
+    # Brief initial delay so a just-sent command has time to start executing
+    sleep 0.2
+
+    local elapsed=0
+    while true; do
+        if _is_session_idle "$session_name"; then
+            return 0
+        fi
+
+        sleep "$poll_interval"
+        elapsed=$(echo "$elapsed + $poll_interval + 0" | bc)
+
+        if [[ "$timeout" != "0" ]] && (( $(echo "$elapsed >= $timeout" | bc -l) )); then
+            return 1
+        fi
+    done
 }
 
 # ==============================================================================
@@ -318,44 +376,17 @@ cmd_run() {
 
         # Capture and display output only if --output flag was provided
         if [[ $show_output -eq 1 ]]; then
-            # Wait briefly for script to execute
-            sleep 1
-
-            # Capture output and display everything between the last two julia> prompts
-            # Use -e flag to include ANSI escape sequences (colors)
-            local captured_output=$(tmux capture-pane -t "$session_name" -p -e)
-
-            # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
-            local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
-            local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
-            local prompt_array=($prompt_lines)
-            local num_prompts=${#prompt_array[@]}
-
-            # Need at least 2 prompts (one before command, one after)
-            if [[ $num_prompts -ge 2 ]]; then
-                # Get second-to-last and last prompt lines
-                local start_line=${prompt_array[$((num_prompts - 2))]}
-                local end_line=${prompt_array[$((num_prompts - 1))]}
-
-                # Extract everything between these two prompts (excluding the prompts themselves)
-                # Note: The command is on the same line as the prompt when using send-keys
-                local total_lines=$(echo "$captured_output" | wc -l | tr -d ' ')
-                local output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
-
-                # Strip ANSI codes if --no-color flag is set
-                if [[ $no_color -eq 1 ]]; then
-                    output_lines=$(echo "$output_lines" | sed 's/\x1b\[[0-9;]*m//g')
-                fi
-
-                # Only display if there's actual output (non-empty after stripping whitespace)
-                if [[ -n "$(echo "$output_lines" | tr -d '[:space:]')" ]]; then
-                    echo ""
-                    echo "Output:"
-                    echo "========================================"
-                    echo "$output_lines"
-                    echo "========================================"
-                fi
+            # Wait for command to finish
+            if ! _wait_for_idle "$session_name" 0; then
+                echo "Warning: timed out waiting for command to finish"
             fi
+
+            # Capture output using cmd_print logic
+            local print_args=("$session_name")
+            if [[ $no_color -eq 1 ]]; then
+                print_args+=("--no-color")
+            fi
+            cmd_print "${print_args[@]}"
         fi
 
         echo ""
@@ -509,6 +540,61 @@ cmd_print() {
             echo "(no output since last prompt)"
         fi
         echo "========================================"
+    fi
+}
+
+cmd_wait() {
+    local target=""
+    local timeout=0  # 0 = no timeout
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --timeout)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Error: --timeout requires a value in seconds"
+                    return 1
+                fi
+                timeout="$2"
+                shift 2
+                ;;
+            *)
+                if [[ -z "$target" ]]; then
+                    target="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Get session name
+    local session_name=""
+    if [[ "$target" == julia_* ]]; then
+        session_name="$target"
+    else
+        session_name=$(_julia_session_name_from_project "$target")
+    fi
+
+    # Check if session exists
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "Error: Julia session '$session_name' not found"
+        echo "Use 'juliaserver list' to see running sessions"
+        return 1
+    fi
+
+    # If already idle, return immediately
+    if _is_session_idle "$session_name"; then
+        echo "Session '$session_name' is idle."
+        return 0
+    fi
+
+    # Wait for completion
+    if _wait_for_idle "$session_name" "$timeout"; then
+        echo "Command completed."
+        return 0
+    else
+        echo "Timeout: command still running after ${timeout}s."
+        return 1
     fi
 }
 
@@ -986,6 +1072,9 @@ main() {
             ;;
         print|output|show)
             cmd_print "$@"
+            ;;
+        wait)
+            cmd_wait "$@"
             ;;
         send)
             cmd_send "$@"
