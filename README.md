@@ -20,15 +20,9 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 ### Quick Install
 
 ```bash
-# Download and install
-curl -fsSL https://raw.githubusercontent.com/tomerarnon/juliaserver/main/install.sh | bash
-
-# Or clone and install locally
+# Clone and install
 git clone https://github.com/tomerarnon/juliaserver
 cd juliaserver
-./install.sh
-
-# Or use Make
 make install
 ```
 
@@ -64,7 +58,7 @@ sudo apt install tmux
 
 ## Bash Completion
 
-Tab completion is installed automatically by `install.sh` or `make install`.
+Tab completion is installed automatically by `make install`.
 
 ### Automatic Setup (Homebrew bash-completion users)
 
