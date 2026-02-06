@@ -734,8 +734,8 @@ cmd_send() {
         return 1
     fi
 
-    # Check if first arg is a project spec (@env, directory, or .)
-    if [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
+    # Check if first arg is a project spec (@env, directory, .) or session name
+    if [[ "$1" == julia_* ]] || [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
         project="$1"
         shift
     fi
@@ -756,7 +756,12 @@ cmd_send() {
     fi
 
     # Get session name
-    local session_name=$(_julia_session_name_from_project "$project")
+    local session_name=""
+    if [[ "$project" == julia_* ]]; then
+        session_name="$project"
+    else
+        session_name=$(_julia_session_name_from_project "$project")
+    fi
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
