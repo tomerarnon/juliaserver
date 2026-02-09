@@ -25,6 +25,8 @@ cd juliaserver
 make install
 ```
 
+If you use Claude Code, add `jls` usage instructions to your top-level `~/.claude/CLAUDE.md` so Claude knows how to use it.
+
 ### Manual Install
 
 ```bash
