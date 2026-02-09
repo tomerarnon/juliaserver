@@ -6,21 +6,20 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 
 ## Features
 
-- 🚀 **Fast startup** - Keep Julia sessions alive, avoid recompilation
-- 🔄 **Auto-reload** - Integrated Revise.jl for instant code updates
-- 🖼️ **GUI support** - Works with interactive visualizations (Makie, Plots, etc.)
-- 📦 **Multiple sessions** - Manage different projects/environments simultaneously
-- 🏷️ **Smart naming** - Automatic, deterministic session naming
-- 🐛 **Output capture** - Optional output display and debugging with `--output` flag and `print` command
-- 🔒 **Isolated execution** - Scripts run in isolated namespace by default to prevent pollution
-- 💻 **Pure bash** - No dependencies except tmux and Julia
+- **Fast startup** - Keep Julia sessions alive, avoid recompilation
+- **Auto-reload** - Integrated Revise.jl for instant code updates
+- **GUI support** - Works with interactive visualizations (Makie, Plots, etc.)
+- **Multiple sessions** - Manage different projects/environments simultaneously
+- **Smart naming** - Automatic, deterministic session naming
+- **Output capture** - Optional output display and debugging with `--output` flag and `print` command
+- **Isolated execution** - Scripts run in isolated namespace by default to prevent pollution
+- **Pure bash** - No dependencies except tmux and Julia
 
 ## Installation
 
 ### Quick Install
 
 ```bash
-# Clone and install
 git clone https://github.com/tomerarnon/juliaserver
 cd juliaserver
 make install
@@ -29,7 +28,6 @@ make install
 ### Manual Install
 
 ```bash
-# Copy to a directory in your PATH
 cp juliaserver ~/.local/bin/
 chmod +x ~/.local/bin/juliaserver
 
@@ -44,311 +42,196 @@ export PATH="$HOME/.local/bin:$PATH"
 - **Julia** (1.6+)
 - **md5** (standard on macOS/Linux)
 
-Install tmux:
-```bash
-# macOS
-brew install tmux
+## Shell Completion
 
-# Ubuntu/Debian
-sudo apt install tmux
+Tab completion for bash and zsh is installed automatically by `make install`.
 
-# Other systems
-# See: https://github.com/tmux/tmux
-```
-
-## Bash Completion
-
-Tab completion is installed automatically by `make install`.
-
-### Automatic Setup (Homebrew bash-completion users)
-
-If you have bash-completion installed via Homebrew, completions work immediately:
+If you use Homebrew bash-completion, make sure it's sourced in your profile:
 
 ```bash
-brew install bash-completion
-
-# Add to ~/.bash_profile:
+# ~/.bash_profile
 [[ -r "/usr/local/etc/profile.d/bash_completion.sh" ]] && . "/usr/local/etc/profile.d/bash_completion.sh"
-
-# Restart your shell
-source ~/.bash_profile
 ```
-
-### Manual Setup
 
 If automatic installation didn't work, source the completion manually:
 
 ```bash
 # Add to ~/.bashrc or ~/.bash_profile
 source ~/.bash_completion.d/juliaserver
-
-# Restart your shell
-source ~/.bashrc  # or source ~/.bash_profile
 ```
 
-### Testing Completion
-
-```bash
-# Test command completion
-juliaserver <TAB>
-# Shows: launch start server run exec client print output show send attach list ls info kill stop killall help version
-
-# Test project completion
-juliaserver launch <TAB>
-# Shows: @env names from active sessions, ".", and directories
-
-# Test script completion
-juliaserver run <TAB>
-# Shows: .jl files in current directory
-
-# Test session completion
-juliaserver attach <TAB>
-# Shows: julia_global julia_dev etc.
-
-# Test flag completion
-juliaserver run script.jl <TAB>
-# Shows: --attach -a --output -o --run-in-main -m --no-color
-```
-
-### Completion Features
-
-- **Command and alias completion** - All commands and their aliases (run/exec/client, list/ls, etc.)
-- **Active session discovery** - Dynamically queries tmux for running sessions
-- **@env name extraction** - Automatically discovers environment names from session names
-- **.jl file completion** - Smart file path completion for script arguments
-- **Context-aware flag completion** - Suggests relevant flags based on command and position
-- **Project spec completion** - Completes @env names, ".", and directory paths
+Completion covers commands, aliases, active sessions, `@env` names, `.jl` files, directory paths, and flags.
 
 ## Usage
 
-### Basic Commands
+### Commands
+
+Every command accepts a **project spec** to target a session: `@env` (named environment), `.` (current directory), or a path. If omitted, the global session is used.
+
+Most commands also have **aliases** shown in parentheses.
+
+#### `launch` (aliases: `start`, `server`)
+
+Launch a Julia REPL session in tmux.
 
 ```bash
-# Start a Julia session
 juliaserver launch              # Global environment
 juliaserver launch @dev         # Named environment
 juliaserver launch .            # Current project
 juliaserver launch ~/my-project # Specific path
+```
 
-# Run a script in a session
-juliaserver run script.jl           # In global session (no output shown, isolated)
-juliaserver run . script.jl         # In current project session
-juliaserver run @dev analysis.jl    # In @dev session
-juliaserver run script.jl -m        # Run in Main namespace instead of isolated
+#### `run` (aliases: `exec`, `client`)
 
-# Run with output capture
-juliaserver run script.jl --output  # Show output after execution
-juliaserver run script.jl -o        # Short form
-juliaserver run script.jl -o --no-color  # Without ANSI colors
+Run a script in an existing session. By default, scripts run in an isolated module (`JLSClientModule`) to prevent namespace pollution.
 
-# View output from last command
-juliaserver print                   # Print output from global session
-juliaserver print @dev              # Print output from @dev session
-juliaserver print 50                # Print last 50 lines
-juliaserver print @dev 100          # Print last 100 lines from @dev session
-juliaserver print --no-color        # Print without colors
+```bash
+juliaserver run script.jl              # Global session, isolated
+juliaserver run . script.jl            # Current project session
+juliaserver run @dev analysis.jl       # @dev session
+```
 
-# Send commands directly to a session
-juliaserver send 'println("hello")'         # Execute Julia code in global session
-juliaserver send @dev 'x = 42'              # Execute in @dev session
-juliaserver send interrupt                  # Send Ctrl+C to global session
-juliaserver send @dev interrupt             # Interrupt @dev session
+**Flags:**
 
-# List all sessions
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Capture and display output after execution |
+| `--run-in-main` | `-m` | Run in Main namespace instead of isolated module |
+| `--attach` | `-a` | Attach to session after sending the script |
+| `--no-color` | | Strip ANSI color codes from output |
+
+```bash
+juliaserver run script.jl -o           # Run and show output
+juliaserver run script.jl -m           # Run in Main namespace
+juliaserver run script.jl -a           # Run and attach to session
+juliaserver run script.jl -o --no-color
+```
+
+Scripts can also receive arguments via Julia's `ARGS`:
+
+```bash
+juliaserver run script.jl arg1 arg2    # ARGS = ["arg1", "arg2"]
+```
+
+**When to use each mode:**
+- **Isolated (default)**: One-off scripts, analyses, plots, testing
+- **Main (`-m`)**: Defining utilities, loading data into REPL, interactive development
+
+#### `print` (aliases: `output`, `show`)
+
+View output from the last command in a session.
+
+```bash
+juliaserver print                      # Global session
+juliaserver print @dev                 # @dev session
+juliaserver print 50                   # Last 50 lines
+juliaserver print @dev 100             # Last 100 lines from @dev
+juliaserver print --no-color           # Strip ANSI codes
+juliaserver print --no-color > log.txt # Save to file
+```
+
+The `print` command is smart about what it shows:
+- Displays output between the last two `julia>` prompts
+- If the last command had no output, falls back to the previous command's output
+- Automatically detects `ERROR:` and displays the full stacktrace
+
+#### `wait`
+
+Block until a running command finishes (polls for the `julia>` prompt).
+
+```bash
+juliaserver wait                       # Wait for global session
+juliaserver wait .                     # Wait for current project session
+juliaserver wait . --timeout 30        # Wait with 30s timeout (exit 1 on timeout)
+```
+
+Useful for scripting: `juliaserver run . script.jl && juliaserver wait . && juliaserver print .`
+
+#### `send`
+
+Send arbitrary Julia code or an interrupt signal to a session. Code executes directly in the Main namespace (not isolated).
+
+```bash
+juliaserver send 'println("hello")'    # Execute Julia code
+juliaserver send @dev 'using Plots'    # Load a package
+juliaserver send interrupt             # Send Ctrl+C to global session
+juliaserver send @dev interrupt        # Send Ctrl+C to @dev session
+```
+
+#### `attach`
+
+Attach to a session's tmux terminal. Detach with `Ctrl+b d`.
+
+```bash
+juliaserver attach @dev
+juliaserver attach .
+juliaserver attach julia_global
+```
+
+#### `list` (alias: `ls`)
+
+List all running Julia sessions.
+
+```bash
 juliaserver list
+```
 
-# Kill a session
-juliaserver kill julia_global       # By session name
-juliaserver kill @dev               # By project spec
-juliaserver kill .                  # Current directory session
+#### `info`
 
-# Get help
-juliaserver help
-juliaserver --version
+Show detailed information about sessions (project, status, uptime, memory, PIDs).
+
+```bash
+juliaserver info                       # All sessions
+juliaserver info @dev                  # Specific session
+```
+
+#### `kill` (alias: `stop`)
+
+Kill a session.
+
+```bash
+juliaserver kill @dev
+juliaserver kill .
+juliaserver kill julia_global
+```
+
+#### `killall`
+
+Kill all running Julia sessions.
+
+```bash
+juliaserver killall
 ```
 
 ### Example Workflow
 
 ```bash
-# Morning: Start your project session
-cd ~/Documents/projects/myproject
+# Start your project session
+cd ~/projects/myproject
 juliaserver launch .
 
 # Run a quick test with output
-juliaserver run . test.jl --output
-# Output:
-# ========================================
-# All tests passed!
-# ========================================
+juliaserver run . test.jl -o
 
-# Run your visualization script
-# The Makie plot opens and stays open!
+# Run your visualization script (Makie window stays open)
 juliaserver run . src/visualize.jl
 
-# Edit code in your editor...
-# Changes auto-reload via Revise!
+# Edit code in your editor... changes auto-reload via Revise!
 
-# Re-run the script (no output shown)
+# Re-run the script
 juliaserver run . src/visualize.jl
 
 # Check if there were any errors
 juliaserver print
 
-# Quick REPL command to check a variable
+# Quick REPL command
 juliaserver send . 'println("Current time: ", now())'
 
 # Check all running sessions
 juliaserver list
 
-# Evening: Clean up
+# Clean up
 juliaserver kill .
-```
-
-### Advanced Usage
-
-#### Working with Multiple Sessions
-
-```bash
-# Start sessions for different projects
-juliaserver launch ~/project-a
-juliaserver launch ~/project-b
-juliaserver launch @dev
-
-# Run scripts in specific sessions
-juliaserver run ~/project-a test.jl
-juliaserver run ~/project-b benchmark.jl
-
-# List all active sessions
-juliaserver list
-```
-
-#### Output Capture and Debugging
-
-By default, `juliaserver run` sends scripts to the Julia session without displaying output. This keeps things fast and clean. When you need to see output for debugging:
-
-```bash
-# Option 1: Capture output when running
-juliaserver run script.jl --output          # Show output immediately
-juliaserver run script.jl -o                # Short form
-
-# Option 2: View output after running
-juliaserver run script.jl                   # Run without showing output
-juliaserver print                           # View output later
-
-# Works with any session
-juliaserver run @dev analysis.jl -o         # Show output from @dev session
-juliaserver print @dev                      # View @dev session output
-
-# Strip colors for logging or piping
-juliaserver run script.jl -o --no-color     # Show output without colors
-juliaserver print --no-color > log.txt      # Save to file without colors
-```
-
-**When to use each approach:**
-- Use `--output` flag when you want immediate feedback (debugging, checking results)
-- Use `print` command when you forgot to add `--output` or want to review output later
-- Use `--attach` flag for interactive work or long-running scripts with live output
-
-**Smart output display:**
-The `print` command intelligently shows relevant output:
-- If the last command produced output, it displays that output
-- If the last command had no output (like `nothing`, `sleep()`, etc.), it automatically shows output from the previous command
-- If an `ERROR:` is found, it displays the error and full stacktrace
-- You can specify a line count to see more context
-- Use `--no-color` to strip ANSI codes for logging
-
-```bash
-# Automatic fallback to previous output
-juliaserver send 'println("Important result")'  # Produces output
-juliaserver send 'sleep(0.1)'                   # No output
-juliaserver print                               # Shows "Important result" from previous command
-
-# Automatic error detection
-juliaserver run script.jl              # Run script
-juliaserver print                      # Shows error + stacktrace if present
-
-# With line count
-juliaserver print 100                  # Shows last 100 lines (or error if present)
-juliaserver print @dev 50              # Shows last 50 lines from @dev session
-```
-
-#### Isolated Execution (Default)
-
-By default, scripts run in an isolated namespace to prevent polluting the Main namespace:
-
-```bash
-# Default: runs in isolated JLSClientModule
-juliaserver run script.jl
-
-# Equivalent to:
-# module JLSClientModule
-#     include("script.jl")
-# end
-```
-
-This prevents variable conflicts and keeps your REPL clean. If you need to define functions or variables in Main (e.g., for interactive use), use `--run-in-main`:
-
-```bash
-# Run in Main namespace
-juliaserver run script.jl --run-in-main
-juliaserver run script.jl -m           # Short form
-
-# Use case: defining functions for REPL
-juliaserver run utils.jl -m            # Now functions available in REPL
-```
-
-**When to use each mode:**
-- **Isolated (default)**: One-off scripts, analyses, plots, testing
-- **Main (`-m` flag)**: Defining utilities, loading data into REPL, interactive development
-
-#### Sending Commands Directly
-
-The `send` command lets you execute arbitrary Julia code or send control signals (like Ctrl+C) to a running session without attaching to it:
-
-```bash
-# Execute Julia code directly
-juliaserver send 'println("Hello, Julia!")'
-juliaserver send @dev 'using Plots'
-juliaserver send . 'x = [1, 2, 3]; sum(x)'
-
-# Send interrupt signal (Ctrl+C)
-juliaserver send interrupt                  # Interrupt global session
-juliaserver send @dev interrupt             # Interrupt @dev session
-```
-
-**Use cases:**
-
-1. **Quick REPL commands** - Load packages, define variables, run quick calculations without creating a script
-2. **Interrupt frozen sessions** - If a GUI or long computation blocks the REPL, send an interrupt to regain control
-3. **Interactive debugging** - Send test commands to check state without attaching to the session
-
-**Example: Interrupt a frozen GUI**
-
-```bash
-# Launch session and run visualization
-juliaserver launch @dev
-juliaserver run @dev plot_script.jl    # Opens a GUI window, blocks REPL
-
-# Later: GUI is still open but you need the REPL back
-juliaserver send @dev interrupt        # Sends Ctrl+C to unblock the REPL
-
-# Now you can continue working
-juliaserver send @dev 'println("REPL is back!")'
-```
-
-**Note:** Unlike `run`, the `send` command executes code directly in the Main namespace, not in an isolated module.
-
-#### Tmux Integration
-
-```bash
-# Attach to a session manually
-tmux attach -t julia_global
-
-# See all tmux sessions
-tmux list-sessions
-
-# Detach from a session
-# Press: Ctrl+b then d
 ```
 
 ## How It Works
@@ -368,20 +251,11 @@ The hash ensures uniqueness for projects with the same basename.
 
 ### Architecture
 
-1. **juliaserver launch** creates a tmux session with bash
-2. Starts Julia with the appropriate `--project` flag
-3. Auto-loads `Revise.jl`
-4. **juliaserver run** sends `include()` commands to the session
-   - By default, wraps execution in `module JLSClientModule` for isolation
-   - Use `-m` flag to run in Main namespace
-   - Use `-o` flag to capture and display output after execution
-5. **juliaserver send** sends arbitrary commands or control signals
-   - Executes Julia code directly in Main namespace
-   - Can send Ctrl+C interrupt to unblock frozen sessions
-6. **juliaserver print** captures output using `tmux capture-pane`
-   - Automatically detects and displays errors with stacktraces
-   - Falls back to previous cell output if last command had no output
-   - Supports line count limits for viewing specific amounts of output
+1. **`launch`** creates a tmux session, starts Julia with `--project`, and loads Revise.jl
+2. **`run`** sends `include()` commands to the session (wrapped in a module by default for isolation)
+3. **`send`** sends arbitrary Julia code or Ctrl+C directly to the tmux pane
+4. **`print`** captures output using `tmux capture-pane`
+5. **`wait`** polls for the `julia>` prompt to detect command completion
 
 ### Why Tmux Instead of DaemonMode?
 
@@ -389,35 +263,34 @@ The hash ensures uniqueness for projects with the same basename.
 
 ## Tips & Tricks
 
-### Detaching and Reattaching
+### Recommended: Alias as `jls`
+
+Add a shell alias for convenience:
 
 ```bash
-# Detach from session: 
-Ctrl+b d
-```
-```bash
-# Reattach: 
-juliaserver attach <session-name> # Or: 
-tmux attach -t <session-name> # Or: 
-juliaserver run <project> <script>  # Auto-attaches
+# Add to ~/.bashrc or ~/.zshrc
+alias jls='juliaserver'
 ```
 
-
-### Quick Debugging Workflow
+### Quick Debugging
 
 ```bash
-# Rapid iteration with output checking
-juliaserver run script.jl -o        # Run and see output
-# Edit script.jl in your editor
-juliaserver run script.jl -o        # Run again with changes
+# Rapid iteration
+juliaserver run . script.jl -o     # Run and see output
+# Edit script.jl...
+juliaserver run . script.jl -o     # Run again
 
-# Or run without output, check later
-juliaserver run script.jl           # Fast, no output
-juliaserver run script.jl           # Run again
-juliaserver print                   # Check last output
+# Or check output after the fact
+juliaserver run . script.jl        # Fast, no output
+juliaserver print                  # Check later
+```
 
-# Save output for later analysis
-juliaserver print --no-color > debug.log
+### Interrupt a Frozen GUI
+
+```bash
+juliaserver run @dev plot_script.jl    # Opens GUI, blocks REPL
+juliaserver send @dev interrupt        # Ctrl+C to unblock
+juliaserver send @dev 'println("back")'
 ```
 
 ## Troubleshooting
@@ -444,7 +317,6 @@ Pkg.add("Revise")
 ### Tmux Not Found
 
 ```bash
-# Install tmux first
 brew install tmux              # macOS
 sudo apt install tmux          # Ubuntu/Debian
 ```
@@ -452,10 +324,7 @@ sudo apt install tmux          # Ubuntu/Debian
 ## Uninstallation
 
 ```bash
-# Remove all Julia sessions
 juliaserver killall
-
-# manually uninstall
 rm ~/.local/bin/juliaserver
 ```
 
