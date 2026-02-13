@@ -18,7 +18,8 @@ USAGE:
     juliaserver <COMMAND> [OPTIONS] [ARGS]
 
 COMMANDS:
-    launch [PROJECT]              Launch a Julia REPL session in tmux
+    launch [PROJECT] [--name|-n NAME]
+                                  Launch a Julia REPL session in tmux
     run [PROJECT] <SCRIPT> [FLAGS] [ARGS]
                                   Run a script in an existing session.
                                   Default: runs in isolated module (JLSClientModule)
@@ -51,6 +52,14 @@ EXAMPLES:
     juliaserver launch              # Global environment
     juliaserver launch @dev         # Named environment
     juliaserver launch .            # Current directory project
+    juliaserver launch . --name analysis  # Named session "julia_analysis"
+    juliaserver launch . -n server  # Short form: named session "julia_server"
+
+    # Named sessions (use label to target after launch)
+    juliaserver run analysis script.jl    # Run in named session
+    juliaserver send analysis interrupt   # Send interrupt to named session
+    juliaserver print analysis            # Print output from named session
+    juliaserver kill analysis             # Kill named session
 
     # Run scripts
     juliaserver run script.jl                    # Run in isolated mode (default)
@@ -308,9 +317,13 @@ cmd_run() {
     local no_color=0
     local isolated=1  # Default to isolated mode
 
-    # Check if first arg is a project spec (@env, directory, or .)
+    # Check if first arg is a project spec, named session, or script
+    local session_name=""
     if [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
         project="$1"
+        shift
+    elif tmux has-session -t "julia_$1" 2>/dev/null; then
+        session_name="julia_$1"
         shift
     fi
 
@@ -346,8 +359,10 @@ cmd_run() {
         esac
     done
 
-    # Get session name
-    local session_name=$(_julia_session_name_from_project "$project")
+    # Get session name (if not already resolved via named session)
+    if [[ -z "$session_name" ]]; then
+        session_name=$(_resolve_session_name "$project")
+    fi
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
@@ -456,14 +471,7 @@ cmd_print() {
     done
 
     # Get session name
-    local session_name=""
-    if [[ "$target" == julia_* ]]; then
-        # Target is already a session name
-        session_name="$target"
-    else
-        # Convert project spec to session name
-        session_name=$(_julia_session_name_from_project "$target")
-    fi
+    local session_name=$(_resolve_session_name "$target")
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
@@ -606,12 +614,7 @@ cmd_wait() {
     done
 
     # Get session name
-    local session_name=""
-    if [[ "$target" == julia_* ]]; then
-        session_name="$target"
-    else
-        session_name=$(_julia_session_name_from_project "$target")
-    fi
+    local session_name=$(_resolve_session_name "$target")
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
@@ -676,13 +679,20 @@ cmd_list() {
                 fi
             fi
 
+            # Check for named session label
+            local label_info=""
+            local stored_label=$(tmux show-option -t "$session_name" -v @juliaserver_label 2>/dev/null)
+            if [[ -n "$stored_label" ]]; then
+                label_info=" | Label: $stored_label"
+            fi
+
             # Check if session is attached
             local attached=""
             if echo "$session_line" | grep -q "attached"; then
                 attached=" (attached)"
             fi
 
-            echo "Session: $session_name | Project: $project_info$attached"
+            echo "Session: $session_name | Project: $project_info${label_info}$attached"
         fi
     done < <(tmux list-sessions 2>/dev/null)
 
@@ -702,15 +712,7 @@ cmd_kill() {
     fi
 
     local target="$1"
-    local session_name=""
-
-    # Check if target is a session name (starts with julia_)
-    if [[ "$target" == julia_* ]]; then
-        session_name="$target"
-    else
-        # Treat as project spec and convert to session name
-        session_name=$(_julia_session_name_from_project "$target")
-    fi
+    local session_name=$(_resolve_session_name "$target")
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
@@ -734,15 +736,7 @@ cmd_attach() {
     fi
 
     local target="$1"
-    local session_name=""
-
-    # Check if target is a session name (starts with julia_)
-    if [[ "$target" == julia_* ]]; then
-        session_name="$target"
-    else
-        # Treat as project spec and convert to session name
-        session_name=$(_julia_session_name_from_project "$target")
-    fi
+    local session_name=$(_resolve_session_name "$target")
 
     # Check if session exists
     if ! tmux has-session -t "$session_name" 2>/dev/null; then
@@ -772,9 +766,13 @@ cmd_send() {
         return 1
     fi
 
-    # Check if first arg is a project spec (@env, directory, .) or session name
+    # Check if first arg is a project spec, session name, or named session
+    local session_name=""
     if [[ "$1" == julia_* ]] || [[ "$1" == @* ]] || [[ "$1" == "." ]] || [[ -d "$1" ]]; then
         project="$1"
+        shift
+    elif tmux has-session -t "julia_$1" 2>/dev/null; then
+        session_name="julia_$1"
         shift
     fi
 
@@ -793,12 +791,9 @@ cmd_send() {
         return 1
     fi
 
-    # Get session name
-    local session_name=""
-    if [[ "$project" == julia_* ]]; then
-        session_name="$project"
-    else
-        session_name=$(_julia_session_name_from_project "$project")
+    # Get session name (if not already resolved via named session)
+    if [[ -z "$session_name" ]]; then
+        session_name=$(_resolve_session_name "$project")
     fi
 
     # Check if session exists
@@ -990,12 +985,7 @@ cmd_info() {
         fi
     else
         # Show info for specific session
-        local session_name=""
-        if [[ "$target" == julia_* ]]; then
-            session_name="$target"
-        else
-            session_name=$(_julia_session_name_from_project "$target")
-        fi
+        local session_name=$(_resolve_session_name "$target")
         
         if ! tmux has-session -t "$session_name" 2>/dev/null; then
             echo "Error: Julia session '$session_name' not found"
@@ -1079,8 +1069,14 @@ cmd_info() {
             status="running (detached)"
         fi
         
+        # Check for named session label
+        local stored_label=$(tmux show-option -t "$session_name" -v @juliaserver_label 2>/dev/null)
+
         # Display session info
         echo "Session: $session_name"
+        if [[ -n "$stored_label" ]]; then
+            echo "  Label: $stored_label"
+        fi
         echo "  Project: $project_info"
         echo "  Status: $status"
         echo "  Uptime: $uptime"
