@@ -215,7 +215,7 @@ _wait_for_idle() {
 
 cmd_launch() {
     local project="${1:-}"
-    local label="$_JLS_SESSION_LABEL"
+    local label="${_JLS_SESSION_LABEL:-}"
     local session_name
     local proj_desc="${project:-global environment}"
 
@@ -1106,29 +1106,33 @@ main() {
     local command="${1:-help}"
     shift || true
 
-    # Extract --name/-n flag (only meaningful for launch, but strip before dispatch)
+    # Extract --name/-n flag for launch command only
     _JLS_SESSION_LABEL=""
-    local filtered_args=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --name=*)
-                _JLS_SESSION_LABEL="${1#--name=}"
-                ;;
-            --name|-n)
-                if [[ -z "${2:-}" ]]; then
-                    echo "Error: $1 requires a value"
-                    exit 1
-                fi
-                _JLS_SESSION_LABEL="$2"
+    case "$command" in
+        launch|start|server)
+            local filtered_args=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --name=*)
+                        _JLS_SESSION_LABEL="${1#--name=}"
+                        ;;
+                    --name|-n)
+                        if [[ -z "${2:-}" ]]; then
+                            echo "Error: $1 requires a value"
+                            exit 1
+                        fi
+                        _JLS_SESSION_LABEL="$2"
+                        shift
+                        ;;
+                    *)
+                        filtered_args+=("$1")
+                        ;;
+                esac
                 shift
-                ;;
-            *)
-                filtered_args+=("$1")
-                ;;
-        esac
-        shift
-    done
-    set -- "${filtered_args[@]}"
+            done
+            set -- "${filtered_args[@]}"
+            ;;
+    esac
 
     case "$command" in
         launch|start|server)
