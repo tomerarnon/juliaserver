@@ -31,6 +31,21 @@ _juliaserver_get_project_specs() {
     echo "${specs[@]}"
 }
 
+# Helper: Get named session labels
+_juliaserver_get_labels() {
+    local labels=()
+    local sessions=($(_juliaserver_get_sessions))
+
+    for session in $sessions; do
+        local label=$(tmux show-option -t "$session" -v @juliaserver_label 2>/dev/null)
+        if [[ -n "$label" ]]; then
+            labels+=("${session#julia_}")
+        fi
+    done
+
+    echo "${labels[@]}"
+}
+
 _juliaserver() {
     local curcontext="$curcontext" state line
     typeset -A opt_args
@@ -62,6 +77,7 @@ _juliaserver() {
             case $line[1] in
                 launch|start|server)
                     _arguments \
+                        '(-n --name)'{-n,--name}'[Name for the session]:name:' \
                         '1:project:_juliaserver_project_specs'
                     ;;
                 run|exec|client)
@@ -114,7 +130,9 @@ _juliaserver_project_specs() {
 
 _juliaserver_project_or_script() {
     local specs=($(_juliaserver_get_project_specs))
+    local labels=($(_juliaserver_get_labels))
     _describe -t specs 'project' specs
+    [[ ${#labels} -gt 0 ]] && _describe -t labels 'named session' labels
     _path_files -g '*.jl'
     _path_files -/
 }
@@ -140,18 +158,22 @@ _juliaserver_run_flags() {
 _juliaserver_print_args() {
     local sessions=($(_juliaserver_get_sessions))
     local specs=($(_juliaserver_get_project_specs))
+    local labels=($(_juliaserver_get_labels))
     local options=('--no-color:Strip ANSI color codes')
 
     _describe -t sessions 'session' sessions
     _describe -t specs 'project' specs
+    [[ ${#labels} -gt 0 ]] && _describe -t labels 'named session' labels
     _describe -t options 'option' options
 }
 
 _juliaserver_send_first() {
     local specs=($(_juliaserver_get_project_specs))
+    local labels=($(_juliaserver_get_labels))
     local cmds=('interrupt:Send Ctrl+C')
 
     _describe -t specs 'project' specs
+    [[ ${#labels} -gt 0 ]] && _describe -t labels 'named session' labels
     _describe -t cmds 'command' cmds
     _path_files -/
 }
@@ -159,9 +181,11 @@ _juliaserver_send_first() {
 _juliaserver_targets() {
     local sessions=($(_juliaserver_get_sessions))
     local specs=($(_juliaserver_get_project_specs))
+    local labels=($(_juliaserver_get_labels))
 
     _describe -t sessions 'session' sessions
     _describe -t specs 'project' specs
+    [[ ${#labels} -gt 0 ]] && _describe -t labels 'named session' labels
     _path_files -/
 }
 
