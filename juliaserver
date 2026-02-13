@@ -143,6 +143,23 @@ _julia_session_name_from_project() {
     echo "julia_${basename}_${hash}"
 }
 
+_resolve_session_name() {
+    # Resolve a target argument to a tmux session name.
+    # Resolution order:
+    #   1. Already a session name (julia_*)
+    #   2. Named session exists (tmux has julia_<target>)
+    #   3. Treat as project spec and use deterministic naming
+    local target="$1"
+
+    if [[ "$target" == julia_* ]]; then
+        echo "$target"
+    elif tmux has-session -t "julia_$target" 2>/dev/null; then
+        echo "julia_$target"
+    else
+        _julia_session_name_from_project "$target"
+    fi
+}
+
 _is_session_idle() {
     # Check if the Julia REPL is idle by examining the line at the cursor position.
     # When idle, the cursor sits on a "julia>" prompt line.
@@ -198,8 +215,21 @@ _wait_for_idle() {
 
 cmd_launch() {
     local project="${1:-}"
-    local session_name=$(_julia_session_name_from_project "$project")
+    local label="$_JLS_SESSION_LABEL"
+    local session_name
     local proj_desc="${project:-global environment}"
+
+    if [[ -n "$label" ]]; then
+        # Sanitize label: lowercase, replace non-alnum with underscores, collapse runs
+        local sanitized=$(echo "$label" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' '_' | sed 's/__*/_/g; s/^_//; s/_$//')
+        if [[ -z "$sanitized" ]]; then
+            echo "Error: --name value '$label' contains no valid characters"
+            return 1
+        fi
+        session_name="julia_${sanitized}"
+    else
+        session_name=$(_julia_session_name_from_project "$project")
+    fi
 
     # Check if session already exists
     if tmux has-session -t "$session_name" 2>/dev/null; then
@@ -236,6 +266,11 @@ cmd_launch() {
         tmux set-option -t "$session_name" @juliaserver_project "$stored_path"
     fi
 
+    # Store the label for later retrieval (list, info, completion)
+    if [[ -n "$label" ]]; then
+        tmux set-option -t "$session_name" @juliaserver_label "$label"
+    fi
+
     # Wait a moment for tmux to be ready
     sleep 1
 
@@ -254,7 +289,10 @@ cmd_launch() {
     tmux send-keys -t "$session_name" 'using Revise' C-m
 
     echo "Session '$session_name' started successfully!"
-    if [[ -n "$project" ]]; then
+    if [[ -n "$label" ]]; then
+        local sanitized="${session_name#julia_}"
+        echo "Use 'juliaserver run $sanitized <script.jl>' to run scripts"
+    elif [[ -n "$project" ]]; then
         echo "Use 'juliaserver run $project <script.jl>' to run scripts"
     else
         echo "Use 'juliaserver run <script.jl>' to run scripts"
@@ -1067,6 +1105,30 @@ cmd_info() {
 main() {
     local command="${1:-help}"
     shift || true
+
+    # Extract --name/-n flag (only meaningful for launch, but strip before dispatch)
+    _JLS_SESSION_LABEL=""
+    local filtered_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name=*)
+                _JLS_SESSION_LABEL="${1#--name=}"
+                ;;
+            --name|-n)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Error: $1 requires a value"
+                    exit 1
+                fi
+                _JLS_SESSION_LABEL="$2"
+                shift
+                ;;
+            *)
+                filtered_args+=("$1")
+                ;;
+        esac
+        shift
+    done
+    set -- "${filtered_args[@]}"
 
     case "$command" in
         launch|start|server)
