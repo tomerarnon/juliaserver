@@ -43,6 +43,22 @@ _juliaserver_get_project_specs() {
     echo "$specs"
 }
 
+# Helper: Get named session labels (label names for sessions that have @juliaserver_label)
+_juliaserver_get_labels() {
+    local labels=""
+    local sessions=$(_juliaserver_get_sessions)
+
+    for session in $sessions; do
+        local label=$(tmux show-option -t "$session" -v @juliaserver_label 2>/dev/null)
+        if [[ -n "$label" ]]; then
+            # Use the sanitized name (strip julia_ prefix) as the completion value
+            labels="$labels ${session#julia_}"
+        fi
+    done
+
+    echo "$labels"
+}
+
 # Helper: Check if a word looks like a project spec
 _juliaserver_is_project_spec() {
     local word="$1"
@@ -79,25 +95,27 @@ _juliaserver() {
 
     case "$command" in
         launch|start|server)
-            # launch [PROJECT]
-            if [[ $cword -eq 2 ]]; then
+            # launch [PROJECT] [--name|-n NAME]
+            if [[ "$prev" == "--name" ]] || [[ "$prev" == "-n" ]]; then
+                # Free-form label, no completions
+                COMPREPLY=()
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--name -n" -- "$cur") )
+            else
                 local specs=$(_juliaserver_get_project_specs)
                 COMPREPLY=( $(compgen -W "$specs" -- "$cur") )
                 # Also enable directory completion
-                if [[ -n "$cur" ]]; then
-                    local dirs=$(compgen -d -- "$cur" 2>/dev/null)
-                    if [[ -n "$dirs" ]]; then
-                        COMPREPLY+=( $dirs )
-                    fi
+                local dirs=$(compgen -d -- "$cur" 2>/dev/null)
+                if [[ -n "$dirs" ]]; then
+                    COMPREPLY+=( $dirs )
                 fi
             fi
             ;;
 
         run|exec|client)
-            # run [PROJECT] <SCRIPT> [FLAGS] [ARGS]
+            # run [PROJECT|LABEL] <SCRIPT> [FLAGS] [ARGS]
             if [[ $cword -eq 2 ]]; then
-                # Ambiguous: could be PROJECT or SCRIPT
-                # Check if current word looks like PROJECT
+                # Ambiguous: could be PROJECT, named session label, or SCRIPT
                 if [[ "$cur" == @* ]] || [[ "$cur" == "." ]]; then
                     # Looks like PROJECT - complete project specs
                     local specs=$(_juliaserver_get_project_specs)
@@ -106,9 +124,11 @@ _juliaserver() {
                     # Looks like a directory path
                     COMPREPLY=( $(compgen -d -- "$cur" 2>/dev/null) )
                 else
-                    # Looks like SCRIPT - complete .jl files
-                    COMPREPLY=( $(compgen -f -X '!*.jl' -- "$cur" 2>/dev/null) )
-                    # Also complete directories in case user is navigating to script
+                    # Could be a named session label or SCRIPT
+                    local labels=$(_juliaserver_get_labels)
+                    COMPREPLY=( $(compgen -W "$labels" -- "$cur") )
+                    # Also complete .jl files and directories
+                    COMPREPLY+=( $(compgen -f -X '!*.jl' -- "$cur" 2>/dev/null) )
                     local dirs=$(compgen -d -- "$cur" 2>/dev/null)
                     if [[ -n "$dirs" ]]; then
                         COMPREPLY+=( $dirs )
@@ -164,10 +184,11 @@ _juliaserver() {
                 # User is typing a number - let them complete it
                 COMPREPLY=()
             elif [[ $has_target -eq 0 ]]; then
-                # Complete TARGET (session names or project specs)
+                # Complete TARGET (session names, labels, or project specs)
                 local sessions=$(_juliaserver_get_sessions)
                 local specs=$(_juliaserver_get_project_specs)
-                COMPREPLY=( $(compgen -W "$sessions $specs" -- "$cur") )
+                local labels=$(_juliaserver_get_labels)
+                COMPREPLY=( $(compgen -W "$sessions $specs $labels" -- "$cur") )
             fi
             ;;
 
@@ -192,14 +213,15 @@ _juliaserver() {
             elif [[ $has_target -eq 0 ]]; then
                 local sessions=$(_juliaserver_get_sessions)
                 local specs=$(_juliaserver_get_project_specs)
-                COMPREPLY=( $(compgen -W "$sessions $specs" -- "$cur") )
+                local labels=$(_juliaserver_get_labels)
+                COMPREPLY=( $(compgen -W "$sessions $specs $labels" -- "$cur") )
             fi
             ;;
 
         send)
-            # send [PROJECT] <COMMAND>
+            # send [PROJECT|LABEL] <COMMAND>
             if [[ $cword -eq 2 ]]; then
-                # Ambiguous: PROJECT or COMMAND
+                # Ambiguous: PROJECT, named session label, or COMMAND
                 if [[ "$cur" == @* ]] || [[ "$cur" == "." ]]; then
                     # Looks like PROJECT
                     local specs=$(_juliaserver_get_project_specs)
@@ -208,12 +230,13 @@ _juliaserver() {
                     # Looks like directory path
                     COMPREPLY=( $(compgen -d -- "$cur" 2>/dev/null) )
                 else
-                    # Could be COMMAND - complete "interrupt" keyword
-                    COMPREPLY=( $(compgen -W "interrupt" -- "$cur") )
+                    # Could be named session label or COMMAND
+                    local labels=$(_juliaserver_get_labels)
+                    COMPREPLY=( $(compgen -W "interrupt $labels" -- "$cur") )
                 fi
             elif [[ $cword -eq 3 ]]; then
-                # If position 2 was PROJECT, complete "interrupt"
-                if _juliaserver_is_project_spec "${words[2]}"; then
+                # If position 2 was PROJECT or label, complete "interrupt"
+                if _juliaserver_is_project_spec "${words[2]}" || tmux has-session -t "julia_${words[2]}" 2>/dev/null; then
                     COMPREPLY=( $(compgen -W "interrupt" -- "$cur") )
                 fi
                 # Otherwise it's arbitrary Julia code - no completion
@@ -225,7 +248,8 @@ _juliaserver() {
             if [[ $cword -eq 2 ]]; then
                 local sessions=$(_juliaserver_get_sessions)
                 local specs=$(_juliaserver_get_project_specs)
-                COMPREPLY=( $(compgen -W "$sessions $specs" -- "$cur") )
+                local labels=$(_juliaserver_get_labels)
+                COMPREPLY=( $(compgen -W "$sessions $specs $labels" -- "$cur") )
                 # Also allow directory completion for paths
                 local dirs=$(compgen -d -- "$cur" 2>/dev/null)
                 if [[ -n "$dirs" ]]; then
@@ -239,7 +263,8 @@ _juliaserver() {
             if [[ $cword -eq 2 ]]; then
                 local sessions=$(_juliaserver_get_sessions)
                 local specs=$(_juliaserver_get_project_specs)
-                COMPREPLY=( $(compgen -W "$sessions $specs" -- "$cur") )
+                local labels=$(_juliaserver_get_labels)
+                COMPREPLY=( $(compgen -W "$sessions $specs $labels" -- "$cur") )
                 # Also allow directory completion for paths
                 local dirs=$(compgen -d -- "$cur" 2>/dev/null)
                 if [[ -n "$dirs" ]]; then
