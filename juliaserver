@@ -10,106 +10,69 @@ VERSION="1.1.0"
 
 show_help() {
     cat << EOF
-juliaserver - Manage Julia REPL sessions in tmux
+juliaserver (jls) - Persistent Julia REPL sessions in tmux (v$VERSION)
 
-VERSION: $VERSION
+USAGE:  jls <command> [target] [args...]
 
-USAGE:
-    juliaserver <COMMAND> [OPTIONS] [ARGS]
+TARGET can be: . (current dir), @env, a path, or a named session label.
+If omitted, the global session is used.
 
 COMMANDS:
     launch [PROJECT] [--name|-n NAME]
-                                  Launch a Julia REPL session in tmux
-    run [PROJECT] <SCRIPT> [FLAGS] [ARGS]
-                                  Run a script in an existing session.
-                                  Default: runs in isolated module (JLSClientModule)
-                                  FLAGS: --attach/-a (attach after running)
-                                         --output/-o (capture and display output)
-                                         --run-in-main/-m (run in Main namespace)
-                                         --no-color (strip ANSI color codes)
+        Start a Julia REPL session in tmux. Loads Revise.jl for auto-reloading.
+        --name/-n creates a named session (e.g. --name analysis → julia_analysis).
+
+    run [TARGET] <SCRIPT> [FLAGS] [ARGS...]
+        Run a script in an existing session (isolated module by default).
+        FLAGS:  -o/--output       capture and display output (waits for completion)
+                -m/--run-in-main  run in Main namespace instead of isolated module
+                -a/--attach       attach to session after sending script
+                --no-color        strip ANSI color codes from output
+        Extra args after flags are passed to the script via Julia's ARGS.
+
     print [TARGET] [LINES] [--no-color]
-                                  Print output from session.
-                                  Without LINES: shows output since last command
-                                  With LINES: shows last N lines
-                                  Automatically detects and highlights errors
-    wait [PROJECT] [--timeout SECS]
-                                  Wait for a running command to finish.
-                                  Polls until the julia> prompt reappears.
-                                  Returns exit code 1 on timeout.
-    send [PROJECT] <COMMAND>      Send arbitrary command or interrupt to session.
-                                  COMMAND: 'interrupt' sends Ctrl+C
-                                           Any other string is executed as Julia code
-    attach <TARGET>               Attach to an existing session
-    list                          List all running Julia sessions
-    info [TARGET]                 Show detailed information about session(s)
-    kill <TARGET>                 Kill a Julia session
-    killall                       Kill all running Julia sessions
-    help                          Show this help message
-    version                       Show version information
+        Show output from the last command. Detects errors and shows stacktraces.
+        LINES: show last N lines instead of output since last command.
+
+    send [TARGET] <CODE|interrupt>
+        Send Julia code or Ctrl+C to a session. Runs in Main (not isolated).
+
+    wait [TARGET] [--timeout SECS]
+        Block until a running command finishes (polls for julia> prompt).
+        Returns exit code 1 on timeout.
+
+    attach [TARGET]
+        Attach to the session's tmux terminal. Detach with Ctrl+b d.
+
+    list        List all running sessions
+    info        Show details (project, uptime, memory, PIDs) for all sessions
+    kill        Kill a session
+    killall     Kill all Julia sessions
 
 EXAMPLES:
-    # Launch sessions
-    juliaserver launch              # Global environment
-    juliaserver launch @dev         # Named environment
-    juliaserver launch .            # Current directory project
-    juliaserver launch . --name analysis  # Named session "julia_analysis"
-    juliaserver launch . -n server  # Short form: named session "julia_server"
+    jls launch .                          # start session for current project
+    jls launch . --name analysis          # named session "julia_analysis"
+    jls run . script.jl -o                # run script, show output
+    jls run analysis script.jl            # run in named session
+    jls run . script.jl -m arg1 arg2      # run in Main with arguments
+    jls print                             # check last command's output
+    jls send . 'using Plots'              # load a package
+    jls send . interrupt                  # Ctrl+C
+    jls attach .                          # interactive REPL access
+    jls wait . && jls print .             # wait then show output
+    jls list                              # see all sessions
+    jls kill analysis                     # kill named session
 
-    # Named sessions (use label to target after launch)
-    juliaserver run analysis script.jl    # Run in named session
-    juliaserver send analysis interrupt   # Send interrupt to named session
-    juliaserver print analysis            # Print output from named session
-    juliaserver kill analysis             # Kill named session
+SESSION NAMING:
+    (none)          → julia_global
+    @dev            → julia_dev
+    . or /path      → julia_<basename>_<hash>
+    --name foo      → julia_foo
 
-    # Run scripts
-    juliaserver run script.jl                    # Run in isolated mode (default)
-    juliaserver run . script.jl                  # Run in current project session
-    juliaserver run script.jl --output           # Run and capture/display output
-    juliaserver run script.jl --run-in-main      # Run in Main namespace
-    juliaserver run script.jl -m                 # Short form for --run-in-main
-    juliaserver run script.jl -o --no-color      # Show output without colors
-    juliaserver run script.jl --attach           # Run and attach to session
-    juliaserver run script.jl -a arg1 arg2       # Run with attach flag and arguments
-    juliaserver run . script.jl --param=value    # Pass keyword-style arguments
+Named sessions let you run multiple sessions for the same project.
+After launch, use the label directly: jls run analysis script.jl
 
-    # View output
-    juliaserver print               # Print output from last command
-    juliaserver print 50            # Print last 50 lines
-    juliaserver print @dev          # Print output from @dev session
-    juliaserver print @dev 100      # Print last 100 lines from @dev
-    juliaserver print . --no-color  # Print output without colors
-
-    # Wait for completion
-    juliaserver wait                # Wait for global session to finish
-    juliaserver wait .              # Wait for current project session
-    juliaserver wait . --timeout 30 # Wait with 30s timeout
-
-    # Send commands
-    juliaserver send interrupt                  # Interrupt (Ctrl+C) global session
-    juliaserver send @dev interrupt             # Interrupt @dev session
-    juliaserver send 'println("hello")'         # Execute Julia code in global
-    juliaserver send @dev 'x = 42'              # Execute Julia code in @dev
-    juliaserver send . 'using Plots'            # Load package in current project
-
-    # Manage sessions
-    juliaserver list                # List all sessions
-    juliaserver info                # Show info for all sessions
-    juliaserver info @dev           # Show info for specific session
-    juliaserver attach @dev         # Attach to a session
-    juliaserver kill julia_dev      # Kill specific session
-    juliaserver killall             # Kill all Julia sessions
-
-FEATURES:
-    - Multiple named sessions for different projects
-    - Automatic Revise.jl integration for instant reloading
-    - Works with interactive GUIs (Makie, Plots, etc.)
-    - Deterministic session naming based on projects
-    - Pass arguments to scripts via ARGS global variable
-    - Optional output capture for debugging (--output flag)
-    - View session output anytime with print command
-    - Isolated execution by default to prevent namespace pollution
-
-For more information, see: https://github.com/yourusername/juliaserver
+For more information, see: https://github.com/tomerarnon/juliaserver
 
 EOF
 }
