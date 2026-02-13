@@ -2,7 +2,7 @@
 
 **Keep Julia sessions alive in tmux so you never wait for compilation again.**
 
-Solves the "time to first plot" problem. Launch a Julia REPL once, then run scripts against it all day. Code changes reload instantly via Revise.jl. Interactive GUIs (Makie, Plots) stay open between runs.
+Solves the "time to first plot" and the "I have too many REPLs open" problem. Launch a Julia REPL once, then run scripts against it all day, forget it exists, use it again when you need it next week. Code changes reload instantly via Revise.jl, plots and interactive GUIs (e.g. with Makie, Plots) stay open between runs, session can be attached to when interaction is helpful, then detached from.
 
 ## Install
 
@@ -28,6 +28,8 @@ jls run . script.jl -o            # run again instantly
 
 jls print                         # check output from last command
 jls send . 'x = 42'              # run Julia code directly
+jls attach .                      # drop into the REPL interactively
+                                  # Ctrl+b d to detach (session keeps running)
 jls kill .                        # done for the day
 ```
 
@@ -105,6 +107,18 @@ jls send . 'println(x)'          # inspect a variable
 jls send . interrupt              # Ctrl+C to stop running code
 ```
 
+#### `attach`
+
+Attach to a session's live tmux terminal for interactive REPL use. Detach with `Ctrl+b d` — the session keeps running in the background.
+
+```bash
+jls attach .                      # attach to current project session
+jls attach @dev                   # attach to @dev session
+jls attach analysis               # attach to named session
+```
+
+This is useful when you need to interact with the REPL directly — explore data, use the package manager, or debug interactively — then detach and go back to running scripts headlessly.
+
 #### `wait`
 
 Block until a running command finishes. Useful for scripting.
@@ -121,7 +135,6 @@ jls run . script.jl && jls wait . && jls print .
 |---------|-------------|
 | `jls list` | List all running sessions |
 | `jls info` | Show details (project, uptime, memory, PIDs) |
-| `jls attach .` | Attach to tmux terminal (detach: `Ctrl+b d`) |
 | `jls kill .` | Kill a session |
 | `jls killall` | Kill all Julia sessions |
 
@@ -138,7 +151,7 @@ jls run . script.jl -o            # run again, Revise reloads changes
 ### Interrupt a Frozen GUI
 
 ```bash
-jls run . plot_script.jl          # opens GUI, blocks REPL
+jls run . plot_script.jl          # e.g. opens GUI, blocks REPL
 jls send . interrupt              # Ctrl+C to unblock
 ```
 
@@ -162,10 +175,6 @@ Named sessions (`--name`) replace the deterministic name entirely — the projec
 3. **`send`** sends Julia code or Ctrl+C to the tmux pane
 4. **`print`** captures output via `tmux capture-pane`
 5. **`wait`** polls for the `julia>` prompt
-
-### Why Tmux?
-
-[DaemonMode.jl](https://github.com/dmolina/DaemonMode.jl) doesn't support interactive GUIs — plot windows close immediately. Tmux provides a real terminal where visualizations stay open.
 
 ## Troubleshooting
 
