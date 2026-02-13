@@ -249,9 +249,13 @@ cmd_launch() {
     # Wait for Julia to start
     sleep 3
 
-    # Send Revise loading command
-    echo "Loading Revise..."
-    tmux send-keys -t "$session_name" 'using Revise' C-m
+    # Load Revise if available (silently skip if not installed)
+    tmux send-keys -t "$session_name" 'if Base.find_package("Revise") !== nothing; using Revise; end' C-m
+
+    # Warn on the user-facing terminal if Revise isn't installed
+    if ! grep -rq "Revise" "$HOME/.julia/environments"/*/Project.toml 2>/dev/null; then
+        echo "Note: Revise.jl not found. Add to your global Julia environment for auto-reloading."
+    fi
 
     echo "Session '$session_name' started successfully!"
     if [[ -n "$project" ]]; then
