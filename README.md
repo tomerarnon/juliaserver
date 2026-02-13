@@ -10,7 +10,8 @@ A simple bash CLI tool for managing long-lived Julia REPL sessions in tmux. Solv
 - **Auto-reload** - Integrated Revise.jl for instant code updates
 - **GUI support** - Works with interactive visualizations (Makie, Plots, etc.)
 - **Multiple sessions** - Manage different projects/environments simultaneously
-- **Smart naming** - Automatic, deterministic session naming
+- **Named sessions** - Run multiple sessions per project with `--name`
+- **Smart naming** - Automatic, deterministic session naming for unnamed sessions
 - **Output capture** - Optional output display and debugging with `--output` flag and `print` command
 - **Isolated execution** - Scripts run in isolated namespace by default to prevent pollution
 - **Pure bash** - No dependencies except tmux and Julia
@@ -81,6 +82,23 @@ juliaserver launch              # Global environment
 juliaserver launch @dev         # Named environment
 juliaserver launch .            # Current project
 juliaserver launch ~/my-project # Specific path
+```
+
+**Named sessions** with `--name`/`-n` let you run multiple sessions for the same project:
+
+```bash
+juliaserver launch . --name analysis   # Creates "julia_analysis"
+juliaserver launch . --name server     # Creates "julia_server"
+juliaserver launch . -n worker         # Short form
+```
+
+After launch, use the name directly with any command:
+
+```bash
+juliaserver run analysis script.jl
+juliaserver send server interrupt
+juliaserver print analysis
+juliaserver kill server
 ```
 
 #### `run` (aliases: `exec`, `client`)
@@ -248,8 +266,11 @@ Sessions are named deterministically based on the project:
 | `@dev` | `julia_dev` | Named environment |
 | `.` | `julia_<dirname>_<hash>` | Current directory |
 | `/path/to/proj` | `julia_<basename>_<hash>` | Specific path |
+| `--name analysis` | `julia_analysis` | Explicit named session |
 
 The hash ensures uniqueness for projects with the same basename.
+
+Named sessions (`--name`) replace the deterministic name entirely — the project environment is passed to Julia via `--project`, not encoded in the session name. This lets you run multiple sessions for the same project (e.g., one for analysis, one for a dev server).
 
 ### Architecture
 
