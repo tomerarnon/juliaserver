@@ -268,12 +268,14 @@ cmd_launch() {
     if [[ -n "$label" ]]; then
         local sanitized="${session_name#julia_}"
         echo "Use 'juliaserver run $sanitized <script.jl>' to run scripts"
+        echo "Use 'juliaserver attach $sanitized' to attach to the session"
     elif [[ -n "$project" ]]; then
         echo "Use 'juliaserver run $project <script.jl>' to run scripts"
+        echo "Use 'juliaserver attach $project' to attach to the session"
     else
         echo "Use 'juliaserver run <script.jl>' to run scripts"
+        echo "Use 'juliaserver attach' to attach to the session"
     fi
-    echo "Use 'tmux attach -t $session_name' to attach to the session"
 }
 
 cmd_run() {
