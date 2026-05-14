@@ -1030,13 +1030,16 @@ cmd_info() {
             fi
         fi
         
-        # Status
-        local status="running"
-        if [[ "$attached" == "1" ]]; then
-            status="running (attached)"
-        else
-            status="running (detached)"
+        # Status: idle/busy from REPL prompt detection, attached/detached from tmux
+        local activity="busy"
+        if _is_session_idle "$session_name"; then
+            activity="idle"
         fi
+        local attach_state="detached"
+        if [[ "$attached" == "1" ]]; then
+            attach_state="attached"
+        fi
+        local status="$activity ($attach_state)"
         
         # Check for named session label
         local stored_label=$(tmux show-option -t "$session_name" -v @juliaserver_label 2>/dev/null)
