@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # ==============================================================================
 # Julia + Tmux Session Management CLI
