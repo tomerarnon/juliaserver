@@ -95,12 +95,15 @@ _juliaserver() {
 
     case "$command" in
         launch|start|server)
-            # launch [PROJECT] [--name|-n NAME]
+            # launch [PROJECT] [--name|-n NAME] [--history-limit N]
+            if [[ "$prev" == "--history-limit" ]]; then
+                return 0   # numeric argument, nothing to complete
+            fi
             if [[ "$prev" == "--name" ]] || [[ "$prev" == "-n" ]]; then
                 # Free-form label, no completions
                 COMPREPLY=()
             elif [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--name -n" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--name -n --history-limit" -- "$cur") )
             else
                 local specs=$(_juliaserver_get_project_specs)
                 COMPREPLY=( $(compgen -W "$specs" -- "$cur") )
