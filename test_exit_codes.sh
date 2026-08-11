@@ -133,6 +133,57 @@ test_send_clears_marker() {
                 "$([[ $elapsed -ge 1 ]] && echo 1 || echo 0)"
 }
 
+test_marker_not_in_output() {
+    echo "completion marker never reaches the user:"
+    $JLS run "$SESSION_LABEL" "$TMPD/ok.jl" >/dev/null 2>&1
+    $JLS wait "$SESSION_LABEL" --timeout 60 >/dev/null 2>&1
+    local out
+    out=$($JLS print "$SESSION_LABEL" --no-color 2>&1)
+    assert_true "print output has no __JLS_DONE__ line" \
+        "$(echo "$out" | grep -q "__JLS_DONE__" && echo 0 || echo 1)"
+    assert_true "print output still contains the script's output" \
+        "$(echo "$out" | grep -q "ok script ran" && echo 1 || echo 0)"
+
+    out=$($JLS run "$SESSION_LABEL" "$TMPD/ok.jl" -o --no-color 2>&1)
+    assert_true "run --output has no __JLS_DONE__ line" \
+        "$(echo "$out" | grep -q "__JLS_DONE__" && echo 0 || echo 1)"
+    assert_true "run --output still contains the script's output" \
+        "$(echo "$out" | grep -q "ok script ran" && echo 1 || echo 0)"
+
+    $JLS run "$SESSION_LABEL" "$TMPD/ok.jl" >/dev/null 2>&1
+    $JLS wait "$SESSION_LABEL" --timeout 60 >/dev/null 2>&1
+    out=$($JLS print "$SESSION_LABEL" 40 --no-color 2>&1)
+    assert_true "print N lines has no __JLS_DONE__ line" \
+        "$(echo "$out" | grep -qE '^__JLS_DONE__' && echo 0 || echo 1)"
+}
+
+test_stale_marker() {
+    echo "a spent marker does not satisfy a later wait:"
+    local start elapsed
+
+    # (a) marker already consumed by a previous wait
+    $JLS run "$SESSION_LABEL" "$TMPD/ok.jl" >/dev/null 2>&1
+    $JLS wait "$SESSION_LABEL" --timeout 60 >/dev/null 2>&1
+    tmux send-keys -t "$SESSION" 'sleep(4); println("typed a")' C-m
+    sleep 0.3
+    start=$(date +%s)
+    $JLS wait "$SESSION_LABEL" --timeout 60 >/dev/null 2>&1
+    elapsed=$(( $(date +%s) - start ))
+    assert_true "waits for a hand-typed command after a consumed marker (${elapsed}s)" \
+        "$([[ $elapsed -ge 3 ]] && echo 1 || echo 0)"
+
+    # (b) marker never consumed: run, then type directly without waiting
+    $JLS run "$SESSION_LABEL" "$TMPD/ok.jl" >/dev/null 2>&1
+    sleep 2
+    tmux send-keys -t "$SESSION" 'sleep(4); println("typed b")' C-m
+    sleep 0.3
+    start=$(date +%s)
+    $JLS wait "$SESSION_LABEL" --timeout 60 >/dev/null 2>&1
+    elapsed=$(( $(date +%s) - start ))
+    assert_true "waits for a hand-typed command after an unconsumed marker (${elapsed}s)" \
+        "$([[ $elapsed -ge 3 ]] && echo 1 || echo 0)"
+}
+
 test_history_limit_flag() {
     echo "--history-limit flag:"
     local s1="jls_hl_a_$$" s2="jls_hl_b_$$" s3="jls_hl_c_$$"
@@ -206,6 +257,8 @@ test_wait_is_not_racy
 test_wait_timeout
 test_send_clears_marker
 test_scrollback
+test_marker_not_in_output
+test_stale_marker
 test_history_limit_flag
 test_line_joining
 

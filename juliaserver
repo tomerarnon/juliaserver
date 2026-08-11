@@ -136,29 +136,78 @@ _resolve_session_name() {
     fi
 }
 
-_run_marker_code() {
-    # Echo the exit status recorded by the most recent `run` in this session,
-    # or nothing if that run has not finished (or predates this feature).
-    local session_name="$1"
-    local run_id
-    run_id=$(tmux show-options -t "$session_name" -qv @juliaserver_runid 2>/dev/null)
-    [[ -z "$run_id" ]] && return 1
-    tmux capture-pane -t "$session_name" -p -J -S - 2>/dev/null \
-        | sed 's/\x1b\[[0-9;]*m//g' \
-        | grep -oE "__JLS_DONE__ ${run_id} [0-9]+" \
-        | tail -1 | awk '{print $3}'
+_jls_guard() {
+    # Wrap a Julia expression so it records whether it threw, without letting the
+    # exception escape (the REPL would otherwise just print it and move on).
+    printf 'try; %s; global __JLS_RC__ = 0; catch e; Base.showerror(Base.stderr, e, Base.catch_backtrace()); Base.println(Base.stderr); global __JLS_RC__ = 1; end' "$1"
 }
 
-_wait_for_marker() {
-    # Poll until the current run's completion marker appears. Returns 0 when it
-    # does, 1 on timeout. Unlike prompt detection this cannot report success
-    # before the command has started, because the marker is printed by the
-    # command itself.
-    local session_name="$1" timeout="${2:-0}" poll=0.2 elapsed=0 code=""
+_jls_emit() {
+    # Print the completion marker. Built from two string literals so that the
+    # command line echoed into the pane never matches a search for the marker.
+    printf 'println("__JLS" * "_DONE__ %s ", %s)' "$1" "$2"
+}
+
+_jls_marker_re() {
+    # Regex matching this session's current completion marker, or empty if none.
+    local run_id
+    run_id=$(tmux show-options -t "$1" -qv @juliaserver_runid 2>/dev/null)
+    [[ -z "$run_id" ]] && return 1
+    printf '__JLS_DONE__ %s [0-9]+' "$run_id"
+}
+
+_jls_clear_marker() {
+    tmux set-option -t "$1" -u @juliaserver_runid 2>/dev/null || true
+}
+
+# How far back to look for the marker. It is the last thing a run prints, so a
+# small window is enough -- and it keeps a stale marker deep in a large
+# scrollback from being matched.
+_JLS_MARKER_TAIL="${JULIASERVER_MARKER_TAIL:-200}"
+
+_jls_marker_scan() {
+    # Echo "<code> <spent>" for the current run's marker, or nothing if it has
+    # not appeared yet. "spent" is 1 when something has been entered at the
+    # prompt since the marker was printed -- typically the user typing directly
+    # into an attached pane -- meaning the marker no longer describes whatever
+    # the session is doing now.
+    local session_name="$1" re pane line code after
+    re=$(_jls_marker_re "$session_name") || return 1
+    pane=$(tmux capture-pane -t "$session_name" -p -J -S "-${_JLS_MARKER_TAIL}" 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g')
+    line=$(echo "$pane" | grep -nE "$re" | tail -1 | cut -d: -f1)
+    [[ -z "$line" ]] && return 1
+    code=$(echo "$pane" | sed -n "${line}p" | grep -oE "$re" | awk '{print $3}')
+    [[ -z "$code" ]] && return 1
+    after=$(echo "$pane" | tail -n "+$((line + 1))" | grep -cE '^julia> +[^[:space:]]' || true)
+    printf '%s %s' "$code" "$([[ ${after:-0} -gt 0 ]] && echo 1 || echo 0)"
+}
+
+_marker_is_spent() {
+    local scan
+    scan=$(_jls_marker_scan "$1") || return 1
+    [[ "${scan##* }" == "1" ]]
+}
+
+_marker_ready() {
+    # Predicate for _poll_until: succeeds once the marker appears, recording its
+    # exit status in _JLS_LAST_CODE.
+    local scan
+    scan=$(_jls_marker_scan "$1") || return 1
+    _JLS_LAST_CODE="${scan%% *}"
+    return 0
+}
+
+_poll_until() {
+    # Poll a predicate until it succeeds or the timeout expires.
+    #   $1 predicate function (called with the session name)
+    #   $2 session name
+    #   $3 timeout in seconds, 0 for no timeout
+    #   $4 poll interval in seconds
+    local predicate="$1" session_name="$2" timeout="${3:-0}" poll="${4:-0.2}"
+    local elapsed=0
     while true; do
-        code=$(_run_marker_code "$session_name")
-        if [[ -n "$code" ]]; then
-            _JLS_LAST_CODE="$code"
+        if "$predicate" "$session_name"; then
             return 0
         fi
         sleep "$poll"
@@ -167,6 +216,13 @@ _wait_for_marker() {
             return 1
         fi
     done
+}
+
+_wait_for_marker() {
+    # Wait for the current run's completion marker. Unlike prompt detection this
+    # cannot report success before the command has started, because the marker is
+    # printed by the command itself.
+    _poll_until _marker_ready "$1" "${2:-0}" 0.2
 }
 
 _is_session_idle() {
@@ -196,26 +252,9 @@ _is_session_idle() {
 _wait_for_idle() {
     # Poll until the session is idle or timeout is reached.
     # Returns 0 on idle, 1 on timeout.
-    local session_name="$1"
-    local timeout="${2:-0}"  # 0 = no timeout
-    local poll_interval=0.5
-
-    # Brief initial delay so a just-sent command has time to start executing
+    # Brief initial delay so a just-sent command has time to start executing.
     sleep 0.2
-
-    local elapsed=0
-    while true; do
-        if _is_session_idle "$session_name"; then
-            return 0
-        fi
-
-        sleep "$poll_interval"
-        elapsed=$(echo "$elapsed + $poll_interval + 0" | bc)
-
-        if [[ "$timeout" != "0" ]] && (( $(echo "$elapsed >= $timeout" | bc -l) )); then
-            return 1
-        fi
-    done
+    _poll_until _is_session_idle "$1" "${2:-0}" 0.5
 }
 
 # ==============================================================================
@@ -443,12 +482,10 @@ cmd_run() {
     # literals so that the echoed command line itself never matches the grep.
     local _jls_run_rc=0
     local run_id="$$-${RANDOM}-$(date +%s)"
-    local emit="println(\"__JLS\" * \"_DONE__ ${run_id} \", __JLS_RC__)"
-
     if [[ $isolated -eq 1 ]]; then
-        julia_cmd="module JLSClientModule; try; ${include_cmd}; global __JLS_RC__ = 0; catch e; Base.showerror(Base.stderr, e, Base.catch_backtrace()); Base.println(Base.stderr); global __JLS_RC__ = 1; end; end; println(\"__JLS\" * \"_DONE__ ${run_id} \", JLSClientModule.__JLS_RC__)"
+        julia_cmd="module JLSClientModule; $(_jls_guard "$include_cmd"); end; $(_jls_emit "$run_id" "JLSClientModule.__JLS_RC__")"
     else
-        julia_cmd="try; ${include_cmd}; global __JLS_RC__ = 0; catch e; Base.showerror(Base.stderr, e, Base.catch_backtrace()); Base.println(Base.stderr); global __JLS_RC__ = 1; end; ${emit}"
+        julia_cmd="$(_jls_guard "$include_cmd"); $(_jls_emit "$run_id" "__JLS_RC__")"
     fi
 
     tmux set-option -t "$session_name" @juliaserver_runid "$run_id" 2>/dev/null || true
@@ -478,6 +515,9 @@ cmd_run() {
                 print_args+=("--no-color")
             fi
             cmd_print "${print_args[@]}"
+            # print used the marker as its boundary; consume the tag now so a
+            # later `wait` doesn't match it again.
+            _jls_clear_marker "$session_name"
         fi
 
         echo ""
@@ -533,59 +573,84 @@ cmd_print() {
         # Default: capture output between last two julia> prompts
         # Get all julia> prompt line numbers (strip ANSI codes for pattern matching)
         local captured_no_ansi=$(echo "$captured_output" | sed 's/\x1b\[[0-9;]*m//g')
-        local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
-        local prompt_array=($prompt_lines)
-        local num_prompts=${#prompt_array[@]}
 
-        if [[ $num_prompts -eq 0 ]]; then
-            echo "No Julia prompt found in session '$session_name'"
-            return 1
+        # If the current run has printed its completion marker, use that as the
+        # end boundary instead of the trailing prompt. It is exact, and it does
+        # not depend on the prompt having been redrawn yet -- capturing straight
+        # after the marker appears would otherwise slice the previous command.
+        local marker_re marker_line sliced=0
+        if marker_re=$(_jls_marker_re "$session_name"); then
+            marker_line=$(echo "$captured_no_ansi" | grep -nE "$marker_re" | tail -1 | cut -d: -f1)
+            if [[ -n "$marker_line" ]]; then
+                local start_line
+                start_line=$(echo "$captured_no_ansi" | head -n "$((marker_line - 1))" \
+                    | grep -n "^julia>" | tail -1 | cut -d: -f1)
+                : "${start_line:=0}"
+                output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((marker_line - 1))p")
+                sliced=1
+            fi
         fi
 
-        # Check if a command is currently running (last line is not a prompt)
-        local total_lines=$(echo "$captured_no_ansi" | wc -l | tr -d ' ')
-        local last_prompt_line=${prompt_array[$((num_prompts - 1))]}
-        local command_running=0
+        if [[ $sliced -eq 0 ]]; then
+            local prompt_lines=$(echo "$captured_no_ansi" | grep -n "^julia>" | cut -d: -f1)
+            local prompt_array=($prompt_lines)
+            local num_prompts=${#prompt_array[@]}
 
-        # If the last prompt is not on the last line, a command is running
-        if [[ $last_prompt_line -lt $total_lines ]]; then
-            command_running=1
-        fi
-
-        if [[ $command_running -eq 1 ]]; then
-            # Command is running: show output from last prompt to end
-            output_lines=$(echo "$captured_output" | sed -n "$((last_prompt_line + 1)),${total_lines}p")
-        else
-            # Command finished: show output between last two prompts
-            # Need at least 2 prompts to show output between them
-            if [[ $num_prompts -lt 2 ]]; then
-                echo "Output from session '$session_name':"
-                echo "========================================"
-                echo "(no commands have been executed yet)"
-                echo "========================================"
-                return 0
+            if [[ $num_prompts -eq 0 ]]; then
+                echo "No Julia prompt found in session '$session_name'"
+                return 1
             fi
 
-            # Get second-to-last and last prompt lines
-            local start_line=${prompt_array[$((num_prompts - 2))]}
-            local end_line=${prompt_array[$((num_prompts - 1))]}
+            # Check if a command is currently running (last line is not a prompt)
+            local total_lines=$(echo "$captured_no_ansi" | wc -l | tr -d ' ')
+            local last_prompt_line=${prompt_array[$((num_prompts - 1))]}
+            local command_running=0
 
-            # Extract everything between these two prompts (excluding the prompts themselves)
-            # Note: The command is on the same line as the prompt when using send-keys,
-            # so the extracted lines are pure output
-            output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+            # If the last prompt is not on the last line, a command is running
+            if [[ $last_prompt_line -lt $total_lines ]]; then
+                command_running=1
+            fi
 
-            # If no output from the most recent command, try the previous cell
-            if [[ -z "$(echo "$output_lines" | tr -d '[:space:]')" ]] && [[ $num_prompts -ge 3 ]]; then
-                # Get third-to-last and second-to-last prompt lines
-                start_line=${prompt_array[$((num_prompts - 3))]}
-                end_line=${prompt_array[$((num_prompts - 2))]}
+            if [[ $command_running -eq 1 ]]; then
+                # Command is running: show output from last prompt to end
+                output_lines=$(echo "$captured_output" | sed -n "$((last_prompt_line + 1)),${total_lines}p")
+            else
+                # Command finished: show output between last two prompts
+                # Need at least 2 prompts to show output between them
+                if [[ $num_prompts -lt 2 ]]; then
+                    echo "Output from session '$session_name':"
+                    echo "========================================"
+                    echo "(no commands have been executed yet)"
+                    echo "========================================"
+                    return 0
+                fi
 
-                # Extract everything between these two prompts
+                # Get second-to-last and last prompt lines
+                local start_line=${prompt_array[$((num_prompts - 2))]}
+                local end_line=${prompt_array[$((num_prompts - 1))]}
+
+                # Extract everything between these two prompts (excluding the prompts themselves)
+                # Note: The command is on the same line as the prompt when using send-keys,
+                # so the extracted lines are pure output
                 output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+
+                # If no output from the most recent command, try the previous cell
+                if [[ -z "$(echo "$output_lines" | tr -d '[:space:]')" ]] && [[ $num_prompts -ge 3 ]]; then
+                    # Get third-to-last and second-to-last prompt lines
+                    start_line=${prompt_array[$((num_prompts - 3))]}
+                    end_line=${prompt_array[$((num_prompts - 2))]}
+
+                    # Extract everything between these two prompts
+                    output_lines=$(echo "$captured_output" | sed -n "$((start_line + 1)),$((end_line - 1))p")
+                fi
             fi
         fi
     fi
+
+    # The completion marker is bookkeeping, not program output. The boundary
+    # logic above already excludes it, but strip it unconditionally so it can
+    # never surface via the prompt-pair fallback or an explicit line count.
+    output_lines=$(echo "$output_lines" | grep -vE '__JLS_DONE__ [^ ]+ [0-9]+[[:space:]]*$' || true)
 
     # Strip ANSI codes if --no-color flag is set
     if [[ $no_color -eq 1 ]]; then
@@ -669,7 +734,16 @@ cmd_wait() {
     # propagate the script's exit status. This is both race-free and gives the
     # caller a real pass/fail signal.
     if tmux show-options -t "$session_name" -qv @juliaserver_runid 2>/dev/null | grep -q .; then
-        if _wait_for_marker "$session_name" "$timeout"; then
+        # If a newer command was typed into the pane after the marker, the marker
+        # can never describe it -- drop the tag and fall through to prompt
+        # detection rather than polling for something that will not come.
+        if _marker_is_spent "$session_name"; then
+            _jls_clear_marker "$session_name"
+        elif _wait_for_marker "$session_name" "$timeout"; then
+            # Consume the tag: a marker already reported must not satisfy a later
+            # wait, or a command typed by hand in the pane would appear to finish
+            # instantly with the previous run's status.
+            _jls_clear_marker "$session_name"
             if [[ "${_JLS_LAST_CODE:-0}" == "0" ]]; then
                 echo "Command completed."
                 return 0
@@ -875,10 +949,10 @@ cmd_send() {
     else
         # Send arbitrary command
         echo "Sending command to session '$session_name': $command"
-        # Anything sent outside of `run` has no completion marker, so drop the tag
-    # and let `wait` fall back to prompt detection.
-    tmux set-option -t "$session_name" -u @juliaserver_runid 2>/dev/null || true
-    tmux send-keys -t "$session_name" "$command" C-m
+        # Anything sent outside of `run` has no completion marker, so drop the
+        # tag and let `wait` fall back to prompt detection.
+        _jls_clear_marker "$session_name"
+        tmux send-keys -t "$session_name" "$command" C-m
         echo "Command sent."
     fi
 }
