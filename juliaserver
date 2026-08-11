@@ -132,6 +132,39 @@ _resolve_session_name() {
     fi
 }
 
+_run_marker_code() {
+    # Echo the exit status recorded by the most recent `run` in this session,
+    # or nothing if that run has not finished (or predates this feature).
+    local session_name="$1"
+    local run_id
+    run_id=$(tmux show-options -t "$session_name" -qv @juliaserver_runid 2>/dev/null)
+    [[ -z "$run_id" ]] && return 1
+    tmux capture-pane -t "$session_name" -p -J -S - 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -oE "__JLS_DONE__ ${run_id} [0-9]+" \
+        | tail -1 | awk '{print $3}'
+}
+
+_wait_for_marker() {
+    # Poll until the current run's completion marker appears. Returns 0 when it
+    # does, 1 on timeout. Unlike prompt detection this cannot report success
+    # before the command has started, because the marker is printed by the
+    # command itself.
+    local session_name="$1" timeout="${2:-0}" poll=0.2 elapsed=0 code=""
+    while true; do
+        code=$(_run_marker_code "$session_name")
+        if [[ -n "$code" ]]; then
+            _JLS_LAST_CODE="$code"
+            return 0
+        fi
+        sleep "$poll"
+        elapsed=$(echo "$elapsed + $poll" | bc)
+        if [[ "$timeout" != "0" ]] && (( $(echo "$elapsed >= $timeout" | bc -l) )); then
+            return 1
+        fi
+    done
+}
+
 _is_session_idle() {
     # Check if the Julia REPL is idle by examining the line at the cursor position.
     # When idle, the cursor sits on a "julia>" prompt line.
@@ -224,7 +257,25 @@ cmd_launch() {
     echo "Starting Julia session '$session_name' for: $proj_desc"
 
     # Create new tmux session with bash, then start Julia from within it
+    # history-limit is read when a pane is created, so it must be set before
+    # new-session. Set it globally just long enough to create ours, then restore
+    # whatever the user had. Without this, tmux's 2000-line default silently
+    # truncates output from large test suites.
+    local _jls_hist="${JULIASERVER_HISTORY_LIMIT:-100000}"
+    local _jls_boot="_juliaserver_boot_$$"
+    local _jls_prev_hist=""
+    # A tmux server only exists while it owns a session, so create a throwaway
+    # one first, raise the global limit long enough to create ours with a large
+    # buffer, then put the user's global back and drop the throwaway.
+    tmux new-session -d -s "$_jls_boot" 2>/dev/null || true
+    _jls_prev_hist=$(tmux show-options -gv history-limit 2>/dev/null || echo "")
+    tmux set-option -g history-limit "$_jls_hist" 2>/dev/null || true
     tmux new-session -d -s "$session_name"
+    tmux set-option -t "$session_name" history-limit "$_jls_hist" 2>/dev/null || true
+    if [[ -n "$_jls_prev_hist" ]]; then
+        tmux set-option -g history-limit "$_jls_prev_hist" 2>/dev/null || true
+    fi
+    tmux kill-session -t "$_jls_boot" 2>/dev/null || true
 
     # Store the original project path for later retrieval
     if [[ -n "$project" ]]; then
@@ -378,12 +429,20 @@ cmd_run() {
         include_cmd="include(\"$script\")"
     fi
 
-    # Wrap in module if isolated flag is set
+    # Tag this run so `wait` and `print` can find its completion marker rather
+    # than guessing from cursor position. The marker is printed from two string
+    # literals so that the echoed command line itself never matches the grep.
+    local _jls_run_rc=0
+    local run_id="$$-${RANDOM}-$(date +%s)"
+    local emit="println(\"__JLS\" * \"_DONE__ ${run_id} \", __JLS_RC__)"
+
     if [[ $isolated -eq 1 ]]; then
-        julia_cmd="module JLSClientModule; ${include_cmd}; end"
+        julia_cmd="module JLSClientModule; try; ${include_cmd}; global __JLS_RC__ = 0; catch e; Base.showerror(Base.stderr, e, Base.catch_backtrace()); Base.println(Base.stderr); global __JLS_RC__ = 1; end; end; println(\"__JLS\" * \"_DONE__ ${run_id} \", JLSClientModule.__JLS_RC__)"
     else
-        julia_cmd="$include_cmd"
+        julia_cmd="try; ${include_cmd}; global __JLS_RC__ = 0; catch e; Base.showerror(Base.stderr, e, Base.catch_backtrace()); Base.println(Base.stderr); global __JLS_RC__ = 1; end; ${emit}"
     fi
+
+    tmux set-option -t "$session_name" @juliaserver_runid "$run_id" 2>/dev/null || true
 
     # Send the include command
     tmux send-keys -t "$session_name" "$julia_cmd" C-m
@@ -399,9 +458,10 @@ cmd_run() {
         # Capture and display output only if --output flag was provided
         if [[ $show_output -eq 1 ]]; then
             # Wait for command to finish
-            if ! _wait_for_idle "$session_name" 0; then
+            if ! _wait_for_marker "$session_name" 0; then
                 echo "Warning: timed out waiting for command to finish"
             fi
+            _jls_run_rc="${_JLS_LAST_CODE:-0}"
 
             # Capture output using cmd_print logic
             local print_args=("$session_name")
@@ -414,6 +474,10 @@ cmd_run() {
         echo ""
         echo "Use 'juliaserver attach $project' to attach to the session"
     fi
+
+    # With --output we waited for the script, so we can report its status.
+    # Without it, `run` stays fire-and-forget and returns 0 as before.
+    return "${_jls_run_rc:-0}"
 }
 
 cmd_print() {
@@ -450,7 +514,7 @@ cmd_print() {
     fi
 
     # Capture output with ANSI codes (including scrollback history)
-    local captured_output=$(tmux capture-pane -t "$session_name" -p -e -S -)
+    local captured_output=$(tmux capture-pane -t "$session_name" -p -e -J -S -)
     local output_lines=""
 
     # If num_lines is specified, just capture that many lines
@@ -590,6 +654,24 @@ cmd_wait() {
         echo "Error: Julia session '$session_name' not found"
         echo "Use 'juliaserver list' to see running sessions"
         return 1
+    fi
+
+    # If this session has a tagged run, wait on its completion marker and
+    # propagate the script's exit status. This is both race-free and gives the
+    # caller a real pass/fail signal.
+    if tmux show-options -t "$session_name" -qv @juliaserver_runid 2>/dev/null | grep -q .; then
+        if _wait_for_marker "$session_name" "$timeout"; then
+            if [[ "${_JLS_LAST_CODE:-0}" == "0" ]]; then
+                echo "Command completed."
+                return 0
+            else
+                echo "Command failed (exit ${_JLS_LAST_CODE})."
+                return "${_JLS_LAST_CODE}"
+            fi
+        else
+            echo "Timeout: command still running after ${timeout}s."
+            return 124
+        fi
     fi
 
     # If already idle, return immediately
@@ -784,7 +866,10 @@ cmd_send() {
     else
         # Send arbitrary command
         echo "Sending command to session '$session_name': $command"
-        tmux send-keys -t "$session_name" "$command" C-m
+        # Anything sent outside of `run` has no completion marker, so drop the tag
+    # and let `wait` fall back to prompt detection.
+    tmux set-option -t "$session_name" -u @juliaserver_runid 2>/dev/null || true
+    tmux send-keys -t "$session_name" "$command" C-m
         echo "Command sent."
     fi
 }
@@ -1098,7 +1183,9 @@ main() {
                 esac
                 shift
             done
-            set -- "${filtered_args[@]}"
+            # `set -u` makes an empty array expansion fatal, which broke
+            # `juliaserver launch --name foo` with no project argument.
+            set -- ${filtered_args[@]+"${filtered_args[@]}"}
             ;;
     esac
 

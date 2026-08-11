@@ -125,9 +125,23 @@ Block until a running command finishes. Useful for scripting.
 
 ```bash
 jls wait .                        # wait indefinitely
-jls wait . --timeout 30           # wait up to 30s (exit 1 on timeout)
+jls wait . --timeout 30           # wait up to 30s (exit 124 on timeout)
 jls run . script.jl && jls wait . && jls print .
 ```
+
+**Exit status.** After a `run`, `wait` exits with the script's own status: `0`
+if it completed, `1` if it threw or a `@testset` failed, `124` on timeout. This
+makes `jls` usable in `&&` chains and CI, and lets an agent tell a passing run
+from a failing one without parsing output. `jls run ... -o` returns the same
+status directly, since it already waits.
+
+```bash
+jls run . test/runtests.jl && jls wait .   # only proceeds if the tests passed
+```
+
+`wait` keys off a completion marker printed by the run itself, so it cannot
+report success before the script has started. After a bare `send` (which has no
+marker) it falls back to prompt detection as before.
 
 ### Session Management
 
@@ -173,8 +187,15 @@ Named sessions (`--name`) replace the deterministic name entirely — the projec
 1. **`launch`** creates a tmux session, starts Julia with `--project`, loads Revise.jl
 2. **`run`** sends `include()` to the session (wrapped in a module for isolation by default)
 3. **`send`** sends Julia code or Ctrl+C to the tmux pane
-4. **`print`** captures output via `tmux capture-pane`
-5. **`wait`** polls for the `julia>` prompt
+4. **`print`** captures output via `tmux capture-pane -J`, which rejoins lines
+   that tmux wrapped at the pane width so long paths and stack traces survive
+5. **`wait`** polls for the run's completion marker, falling back to the
+   `julia>` prompt for commands sent outside of `run`
+
+Sessions are created with a large scrollback (100000 lines) so that output from
+big test suites isn't truncated; tmux's 2000-line default silently drops it.
+Override with `JULIASERVER_HISTORY_LIMIT`. Your global tmux `history-limit` is
+restored afterwards and left unchanged.
 
 ## Troubleshooting
 
