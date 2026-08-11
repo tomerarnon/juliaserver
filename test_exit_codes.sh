@@ -133,6 +133,31 @@ test_send_clears_marker() {
                 "$([[ $elapsed -ge 1 ]] && echo 1 || echo 0)"
 }
 
+test_history_limit_flag() {
+    echo "--history-limit flag:"
+    local s1="jls_hl_a_$$" s2="jls_hl_b_$$" s3="jls_hl_c_$$"
+    $JLS launch --name "$s1" --history-limit 4242 >/dev/null 2>&1
+    assert_true "--history-limit N is applied (got $(tmux show-options -t "julia_$s1" -v history-limit 2>/dev/null))" \
+        "$([[ "$(tmux show-options -t "julia_$s1" -v history-limit 2>/dev/null)" == "4242" ]] && echo 1 || echo 0)"
+
+    $JLS launch --name "$s2" --history-limit=7777 >/dev/null 2>&1
+    assert_true "--history-limit=N form works" \
+        "$([[ "$(tmux show-options -t "julia_$s2" -v history-limit 2>/dev/null)" == "7777" ]] && echo 1 || echo 0)"
+
+    JULIASERVER_HISTORY_LIMIT=5555 $JLS launch --name "$s3" --history-limit 6666 >/dev/null 2>&1
+    assert_true "flag takes precedence over the env var" \
+        "$([[ "$(tmux show-options -t "julia_$s3" -v history-limit 2>/dev/null)" == "6666" ]] && echo 1 || echo 0)"
+
+    local out
+    out=$($JLS launch --name "jls_hl_bad_$$" --history-limit notanumber 2>&1)
+    assert_true "non-numeric value is rejected" \
+        "$(echo "$out" | grep -qi "must be a non-negative integer" && echo 1 || echo 0)"
+
+    tmux kill-session -t "julia_$s1" 2>/dev/null || true
+    tmux kill-session -t "julia_$s2" 2>/dev/null || true
+    tmux kill-session -t "julia_$s3" 2>/dev/null || true
+}
+
 test_scrollback() {
     echo "scrollback:"
     local sess_limit global_limit kept
@@ -181,6 +206,7 @@ test_wait_is_not_racy
 test_wait_timeout
 test_send_clears_marker
 test_scrollback
+test_history_limit_flag
 test_line_joining
 
 echo ""

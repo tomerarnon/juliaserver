@@ -18,9 +18,12 @@ TARGET can be: . (current dir), @env, a path, or a named session label.
 If omitted, the global session is used.
 
 COMMANDS:
-    launch [PROJECT] [--name|-n NAME]
+    launch [PROJECT] [--name|-n NAME] [--history-limit N]
         Start a Julia REPL session in tmux. Loads Revise.jl for auto-reloading.
         --name/-n creates a named session (e.g. --name analysis → julia_analysis).
+        --history-limit sets the session's tmux scrollback in lines (default
+        100000; also settable via JULIASERVER_HISTORY_LIMIT). Large test suites
+        overflow tmux's 2000-line default and their output is lost.
 
     run [TARGET] <SCRIPT> [FLAGS] [ARGS...]
         Run a script in an existing session (isolated module by default).
@@ -52,6 +55,7 @@ COMMANDS:
 EXAMPLES:
     jls launch .                          # start session for current project
     jls launch . --name analysis          # named session "julia_analysis"
+    jls launch . --history-limit 500000   # bigger scrollback for very chatty suites
     jls run . script.jl -o                # run script, show output
     jls run analysis script.jl            # run in named session
     jls run . script.jl -m arg1 arg2      # run in Main with arguments
@@ -261,7 +265,12 @@ cmd_launch() {
     # new-session. Set it globally just long enough to create ours, then restore
     # whatever the user had. Without this, tmux's 2000-line default silently
     # truncates output from large test suites.
-    local _jls_hist="${JULIASERVER_HISTORY_LIMIT:-100000}"
+    # scrollback size: --history-limit flag > JULIASERVER_HISTORY_LIMIT > default
+    local _jls_hist="${_JLS_HISTORY_LIMIT:-${JULIASERVER_HISTORY_LIMIT:-100000}}"
+    if ! [[ "$_jls_hist" =~ ^[0-9]+$ ]]; then
+        echo "Error: history limit must be a non-negative integer (got '$_jls_hist')"
+        return 1
+    fi
     local _jls_boot="_juliaserver_boot_$$"
     local _jls_prev_hist=""
     # A tmux server only exists while it owns a session, so create a throwaway
@@ -1159,8 +1168,9 @@ main() {
     local command="${1:-help}"
     shift || true
 
-    # Extract --name/-n flag for launch command only
+    # Extract --name/-n and --history-limit flags for launch command only
     _JLS_SESSION_LABEL=""
+    _JLS_HISTORY_LIMIT=""
     case "$command" in
         launch|start|server)
             local filtered_args=()
@@ -1175,6 +1185,17 @@ main() {
                             exit 1
                         fi
                         _JLS_SESSION_LABEL="$2"
+                        shift
+                        ;;
+                    --history-limit=*)
+                        _JLS_HISTORY_LIMIT="${1#--history-limit=}"
+                        ;;
+                    --history-limit)
+                        if [[ -z "${2:-}" ]]; then
+                            echo "Error: $1 requires a value"
+                            exit 1
+                        fi
+                        _JLS_HISTORY_LIMIT="$2"
                         shift
                         ;;
                     *)

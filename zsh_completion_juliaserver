@@ -78,6 +78,7 @@ _juliaserver() {
                 launch|start|server)
                     _arguments \
                         '(-n --name)'{-n,--name}'[Name for the session]:name:' \
+                        '--history-limit[tmux scrollback size in lines (default 100000)]:lines:' \
                         '1:project:_juliaserver_project_specs'
                     ;;
                 run|exec|client)

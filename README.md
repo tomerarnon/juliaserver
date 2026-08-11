@@ -47,6 +47,7 @@ Start a Julia REPL session in tmux.
 jls launch                        # global environment
 jls launch .                      # current project
 jls launch @dev                   # named environment
+jls launch . --history-limit 500000   # override the session's scrollback size
 ```
 
 **Named sessions** with `--name`/`-n` let you run multiple sessions for the same project:
@@ -194,8 +195,15 @@ Named sessions (`--name`) replace the deterministic name entirely — the projec
 
 Sessions are created with a large scrollback (100000 lines) so that output from
 big test suites isn't truncated; tmux's 2000-line default silently drops it.
-Override with `JULIASERVER_HISTORY_LIMIT`. Your global tmux `history-limit` is
-restored afterwards and left unchanged.
+Your global tmux `history-limit` is restored afterwards and left unchanged.
+
+Set it per session with `--history-limit`, or globally with the
+`JULIASERVER_HISTORY_LIMIT` environment variable. The flag wins if both are given.
+
+```bash
+jls launch . --history-limit 500000       # very chatty test suite
+jls launch . --history-limit 2000         # back to tmux's default
+```
 
 ## Troubleshooting
 
